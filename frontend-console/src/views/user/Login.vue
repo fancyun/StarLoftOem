@@ -198,8 +198,8 @@ resetCaptchaCache()
 const getErrorMessage = (error: any) => error?.response?.data?.message || error?.message || '操作失败'
 
 const login = async (payload: { account?: string; password?: string; sms_code?: string; login_type: 'password' | 'sms_code' }) => {
-  const { ticket, randstr } = await verifyCaptcha()
-  const result: any = await userAPI.login({ ...payload, captcha_ticket: ticket, captcha_randstr: randstr })
+  const captcha = await verifyCaptcha()
+  const result: any = await userAPI.login({ ...payload, captcha_payload: captcha.payload })
   if (!result || !result.token) {
     throw new Error('登录响应数据异常，请检查后端服务是否已更新')
   }
@@ -244,8 +244,8 @@ const sendCode = async () => {
   }
   if (countdown.value > 0) return
   try {
-    const { ticket, randstr } = await verifyCaptcha()
-    await userAPI.sendSMSCode({ phone: smsForm.phone, captcha_ticket: ticket, captcha_randstr: randstr, scene: 'login' })
+    const captcha = await verifyCaptcha()
+    await userAPI.sendSMSCode({ phone: smsForm.phone, captcha_payload: captcha.payload, scene: 'login' })
     ElMessage.success('验证码已发送')
     countdown.value = 60
     const timer = window.setInterval(() => {

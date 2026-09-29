@@ -17,18 +17,18 @@ export const publicAPI = {
 // 用户相关API
 export const userAPI = {
   // 发送短信验证码
-  sendSMSCode: (data: { phone: string; captcha_ticket: string; captcha_randstr: string; scene: string }) => {
+  sendSMSCode: (data: { phone: string; captcha_payload: Record<string, string>; scene: string }) => {
     return request.post('/send-code', data)
   },
 
   // 用户注册（手机号+用户名+短信验证码）
   // 归属：ref 为推广链接的 12 位推广码（优先），domain 为当前站点域名（回退），均由后端解析绑定
-  register: (data: { phone: string; username: string; sms_code: string; password: string; captcha_ticket: string; captcha_randstr: string; domain?: string; ref?: string }) => {
+  register: (data: { phone: string; username: string; sms_code: string; password: string; captcha_payload: Record<string, string>; domain?: string; ref?: string }) => {
     return request.post('/register', data)
   },
 
   // 用户登录（支持用户名/手机号）
-  login: (data: { account?: string; password?: string; sms_code?: string; login_type: string; captcha_ticket: string; captcha_randstr: string }) => {
+  login: (data: { account?: string; password?: string; sms_code?: string; login_type: string; captcha_payload: Record<string, string> }) => {
     return request.post('/login', data)
   },
 
@@ -129,7 +129,7 @@ export const userAPI = {
   },
 
   // 修改密码
-  changePassword: (data: { sms_code: string; new_password: string; captcha_ticket: string; captcha_randstr: string }) => {
+  changePassword: (data: { sms_code: string; new_password: string; captcha_payload: Record<string, string> }) => {
     return request.post('/change-password', data)
   },
 

@@ -224,11 +224,10 @@ const sendSMSCode = async () => {
   }
   if (smsCountdown.value > 0) return
   try {
-    const { ticket, randstr } = await verifyCaptcha()
+    const captcha = await verifyCaptcha()
     await userAPI.sendSMSCode({
       phone: form.phone,
-      captcha_ticket: ticket,
-      captcha_randstr: randstr,
+      captcha_payload: captcha.payload,
       scene: 'register'
     })
     ElMessage.success('验证码已发送')
@@ -253,14 +252,13 @@ const handleRegister = async () => {
 
   loading.value = true
   try {
-    const { ticket, randstr } = await verifyCaptcha()
+    const captcha = await verifyCaptcha()
     const result = await userAPI.register({
       username: form.username,
       phone: form.phone,
       sms_code: form.sms_code,
       password: form.password,
-      captcha_ticket: ticket,
-      captcha_randstr: randstr,
+      captcha_payload: captcha.payload,
       domain: promotionDomain.value,
       ref: affRef.value
     })

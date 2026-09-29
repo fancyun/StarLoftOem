@@ -44,7 +44,7 @@ func (h *PublicHandler) GetPublicConfig(c *gin.Context) {
 		"code":    0,
 		"message": "success",
 		"data": gin.H{
-			"captcha_app_id":   h.rt.CaptchaAppID(),
+			"captcha":          h.rt.CaptchaProvider().FrontConfig(), // 人机验证码通道与渲染参数
 			"fv_auth_price":    h.rt.FvAuthPrice(),    // 下游有源人脸核验单价（前端展示用）
 			"fv_self_price":    h.rt.FvSelfPrice(),    // 下游无源人脸核验单价（前端展示用）
 			"fv_upstream_base": h.rt.UpstreamFvBase(), // 上游平台人脸核验承接页基址（承接页据此拼接 /auth|/self 跳转）

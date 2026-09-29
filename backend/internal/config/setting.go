@@ -51,6 +51,11 @@ func ApplySettingOverrides(cfg *Config, sys, fv, sms map[string]string) {
 	applyString(&cfg.FaceProvider, sys, SettingKeyFaceProvider)
 	applyString(&cfg.EnterpriseVerifyProvider, sys, SettingKeyEnterpriseVerifyProvider)
 
+	// 人机验证码通道选择与各通道非密钥标识
+	applyString(&cfg.CaptchaProvider, sys, SettingKeyCaptchaProvider)
+	applyString(&cfg.GeetestCaptchaID, sys, SettingKeyGeetestCaptchaID)
+	applyString(&cfg.AliyunCaptchaSceneID, sys, SettingKeyAliyunCaptchaSceneID)
+
 	// 支付宝支付（PEM 证书走 certs/ 目录文件，不入配置表）
 	applyInt(&cfg.Alipay.Enabled, sys, "ALIPAY_ENABLED")
 	applyString(&cfg.Alipay.AppID, sys, "ALIPAY_APP_ID")
@@ -96,6 +101,10 @@ const (
 	// 账户实名人脸核身 / 企业工商四要素核验的 provider 选择
 	SettingKeyFaceProvider             = "FACE_PROVIDER"
 	SettingKeyEnterpriseVerifyProvider = "ENTERPRISE_VERIFY_PROVIDER"
+	// 人机验证码通道选择与各通道非密钥标识
+	SettingKeyCaptchaProvider       = "CAPTCHA_PROVIDER"
+	SettingKeyGeetestCaptchaID      = "GEETEST_CAPTCHA_ID"
+	SettingKeyAliyunCaptchaSceneID  = "ALIYUN_CAPTCHA_SCENE_ID"
 
 	SettingKeyKycPersonalPrice   = "KYC_PERSONAL_PRICE"
 	SettingKeyKycEnterprisePrice = "KYC_ENTERPRISE_PRICE"
@@ -141,6 +150,11 @@ func SettingCatalog() []SettingSpec {
 		{SettingKeyFaceProvider, model.SettingCategoryCommon, "账户实名人脸核身 provider：starloft-上游平台（默认）/ tencent-腾讯云"},
 		{SettingKeyEnterpriseVerifyProvider, model.SettingCategoryCommon, "企业工商四要素核验 provider：tencent-腾讯云 OCR（默认）/ aliyun-阿里云"},
 
+		// 人机验证码通道（密钥类 AppSecretKey/AccessKey/CaptchaKey 只走 .env）
+		{SettingKeyCaptchaProvider, model.SettingCategoryCommon, "人机验证码通道：tencent-腾讯天御（默认）/ geetest-极验 / aliyun-阿里云行为验证码"},
+		{SettingKeyGeetestCaptchaID, model.SettingCategoryCommon, "极验 CaptchaId（provider=geetest 时必填；密钥见 .env 的 GEETEST_CAPTCHA_KEY）"},
+		{SettingKeyAliyunCaptchaSceneID, model.SettingCategoryCommon, "阿里云验证码场景 ID（provider=aliyun 时必填；账号密钥见 .env 的 ALIYUN_ACCESS_KEY_ID/SECRET）"},
+
 		// 支付宝支付（APP_ID 为标识；PEM 证书见 certs/ 目录，均不纳入配置表）
 		{"ALIPAY_ENABLED", model.SettingCategoryAlipay, "启用开关：1-启用 2-不启用"},
 		{"ALIPAY_APP_ID", model.SettingCategoryAlipay, "支付宝应用 AppID"},
@@ -184,6 +198,9 @@ func (cfg *Config) SettingValues() map[string]string {
 		SettingKeyPlatformSmsTemplateID:       cfg.PlatformSmsTemplateID,
 		SettingKeyFaceProvider:                cfg.FaceProvider,
 		SettingKeyEnterpriseVerifyProvider:    cfg.EnterpriseVerifyProvider,
+		SettingKeyCaptchaProvider:             cfg.CaptchaProvider,
+		SettingKeyGeetestCaptchaID:            cfg.GeetestCaptchaID,
+		SettingKeyAliyunCaptchaSceneID:        cfg.AliyunCaptchaSceneID,
 		"ALIPAY_ENABLED":                          strconv.Itoa(cfg.Alipay.Enabled),
 		"ALIPAY_APP_ID":                           cfg.Alipay.AppID,
 		"WECHAT_ENABLED":                          strconv.Itoa(cfg.WechatPay.Enabled),

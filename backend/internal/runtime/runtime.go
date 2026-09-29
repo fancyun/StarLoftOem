@@ -32,12 +32,12 @@ type snapshot struct {
 	// smsPushVerifier 上游短信推送（回执/回复/签名与模板状态）签名校验器
 	smsPushVerifier upstream.SmsPushVerifier
 
-	alipay       *upstream.AlipayClient
-	wechatPay    *upstream.WechatPayClient
-	sms          *service.SMSService
-	captcha      *service.CaptchaService
-	captchaAppID string
-	smsPrice     float64
+	alipay    *upstream.AlipayClient
+	wechatPay *upstream.WechatPayClient
+	sms       *service.SMSService
+	// captchaProvider 人机验证码通道（天御 / 极验 / 阿里云，按后台配置切换）
+	captchaProvider service.CaptchaProvider
+	smsPrice        float64
 	fvAuthPrice  float64
 	fvSelfPrice  float64
 	// 各产品成本单价（元/次、元/条）：仅用于按利润计提推广提成，不参与售价
@@ -78,14 +78,21 @@ func New(cfg *config.Config) (*Runtime, error) {
 		s.enterpriseVerifier = upstream.NewTencentOcrVerifier(ocr)
 	}
 
-	// 人机验证码
-	s.captchaAppID = cfg.Tencent.Captcha.CaptchaAppID
-	s.captcha = service.NewCaptchaService(
+	// 人机验证码：按后台配置选择通道（天御 / 极验 / 阿里云）
+	tencentCaptcha := service.NewCaptchaService(
 		cfg.Tencent.SecretID,
 		cfg.Tencent.SecretKey,
-		s.captchaAppID,
+		cfg.Tencent.Captcha.CaptchaAppID,
 		cfg.Tencent.Captcha.AppSecretKey,
 	)
+	switch cfg.CaptchaProvider {
+	case config.CaptchaProviderGeetest:
+		s.captchaProvider = service.NewGeetestCaptchaProvider(cfg.GeetestCaptchaID, cfg.GeetestCaptchaKey)
+	case config.CaptchaProviderAliyun:
+		s.captchaProvider = service.NewAliyunCaptchaProvider(cfg.AliyunAccessKeyID, cfg.AliyunAccessKeySecret, cfg.AliyunCaptchaSceneID)
+	default:
+		s.captchaProvider = service.NewTencentCaptchaProvider(tencentCaptcha, cfg.Tencent.Captcha.CaptchaAppID)
+	}
 
 	// 平台验证码短信：经上游 StarLoft 平台下发（签名与模板须为上游已审核通过）
 	s.sms = service.NewSMSService(s.starLoft, cfg.PlatformSmsSign, cfg.PlatformSmsTemplateID)
@@ -219,18 +226,11 @@ func (rt *Runtime) SMS() *service.SMSService {
 	return rt.snp.sms
 }
 
-// Captcha 返回当前生效的人机验证码服务。
-func (rt *Runtime) Captcha() *service.CaptchaService {
+// CaptchaProvider 返回当前生效的人机验证码通道 provider。
+func (rt *Runtime) CaptchaProvider() service.CaptchaProvider {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
-	return rt.snp.captcha
-}
-
-// CaptchaAppID 返回当前生效的验证码 AppID（供前端渲染验证码组件）。
-func (rt *Runtime) CaptchaAppID() string {
-	rt.mu.RLock()
-	defer rt.mu.RUnlock()
-	return rt.snp.captchaAppID
+	return rt.snp.captchaProvider
 }
 
 // SMSPrice 返回平台短信单价（元/条）。

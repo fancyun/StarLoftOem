@@ -56,11 +56,10 @@ const sendCode = async () => {
   }
   if (countdown.value > 0) return
   try {
-    const { ticket, randstr } = await verifyCaptcha()
+    const captcha = await verifyCaptcha()
     await userAPI.sendSMSCode({
       phone: phone.value,
-      captcha_ticket: ticket,
-      captcha_randstr: randstr,
+      captcha_payload: captcha.payload,
       scene: 'change_password'
     })
     ElMessage.success('验证码已发送')
@@ -82,12 +81,11 @@ const handleChangePassword = async () => {
 
   passwordLoading.value = true
   try {
-    const { ticket, randstr } = await verifyCaptcha()
+    const captcha = await verifyCaptcha()
     await userAPI.changePassword({
       sms_code: passwordForm.sms_code,
       new_password: passwordForm.new_password,
-      captcha_ticket: ticket,
-      captcha_randstr: randstr
+      captcha_payload: captcha.payload
     })
     ElMessage.success('密码修改成功')
     passwordForm.sms_code = ''

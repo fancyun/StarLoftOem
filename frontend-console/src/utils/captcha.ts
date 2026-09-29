@@ -1,83 +1,72 @@
 /**
- * 腾讯云天御验证码 2.0 封装
- * 官方文档: https://cloud.tencent.com/document/product/1110/36841
+ * 人机验证码前端封装：支持腾讯天御 / 极验行为验证码 / 阿里云行为验证码，
+ * 具体通道与渲染参数由后端 /console/config 的 captcha 字段下发，切换通道无需改前端代码。
  */
 
 import { publicAPI } from '@/api'
 
-// 全局类型声明
+// 全局类型声明（三方 SDK 全局对象）
 declare global {
   interface Window {
     TencentCaptcha: any
+    initGeetest4: any
+    AliyunCaptcha: any
   }
 }
 
-export interface CaptchaResult {
-  ret: number          // 0: 验证成功, 2: 用户主动关闭
-  ticket: string       // 验证成功的票据（ret=0时有效），可能包含 trerror_ 前缀（容灾票据）
-  randstr: string      // 随机串（后续票据校验需要）
-  errorCode?: number   // 错误码
-  errorMessage?: string // 错误信息
-  CaptchaAppId?: string // 验证码应用ID
-  bizState?: any       // 自定义透传参数
+/** 验证码通道配置（后端下发） */
+interface CaptchaConfig {
+  provider: string // tencent / geetest / aliyun
+  app_id?: string // 腾讯天御 CaptchaAppId
+  captcha_id?: string // 极验 CaptchaId
+  scene_id?: string // 阿里云场景 ID
 }
 
-// 缓存 CaptchaAppId，避免重复请求
-let cachedCaptchaAppId: string | null = null
+/** 前端验证结果：通道标识 + 该通道的服务端校验参数 */
+export interface CaptchaResultPayload {
+  provider: string
+  payload: Record<string, string>
+}
+
+// 缓存通道配置，避免重复请求
+let cachedConfig: CaptchaConfig | null = null
 
 // 重置缓存
 export function resetCaptchaCache() {
-  cachedCaptchaAppId = null
+  cachedConfig = null
 }
 
-/**
- * 从后端获取 CaptchaAppId
- */
-async function getCaptchaAppId(): Promise<string> {
-  if (cachedCaptchaAppId) {
-    return cachedCaptchaAppId
+/** 从后端获取验证码通道配置 */
+async function getCaptchaConfig(): Promise<CaptchaConfig> {
+  if (cachedConfig) return cachedConfig
+
+  const config: any = await publicAPI.getConfig()
+  const c = config?.captcha
+  if (c && c.provider) {
+    cachedConfig = c as CaptchaConfig
+  } else {
+    // 兼容未升级后端：回落腾讯天御 + 旧的 captcha_app_id 字段
+    cachedConfig = { provider: 'tencent', app_id: config?.captcha_app_id }
   }
-  
-  try {
-    const config: any = await publicAPI.getConfig()
-    
-    // request 响应拦截器已经返回了 response.data，所以 config 就是后端返回的 data 对象
-    cachedCaptchaAppId = config.captcha_app_id
-    
-    if (!cachedCaptchaAppId) {
-      console.error('配置中未找到 captcha_app_id，完整配置:', JSON.stringify(config))
-      throw new Error('配置中未找到 captcha_app_id')
-    }
-    
-    return cachedCaptchaAppId
-  } catch (error) {
-    console.error('获取验证码配置失败:', error)
-    throw new Error('无法获取验证码配置: ' + (error as Error).message)
+  if (cachedConfig.provider === 'tencent' && !cachedConfig.app_id) {
+    throw new Error('验证码配置缺失（腾讯天御 CaptchaAppId 未配置）')
   }
+  return cachedConfig
 }
 
-/**
- * 动态加载腾讯验证码 SDK
- */
-function loadCaptchaScript(): Promise<void> {
+/** 动态加载脚本（已加载或加载中时直接复用） */
+function loadScript(src: string, marker: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    // 如果已加载，直接返回
-    if (window.TencentCaptcha) {
-      resolve()
+    const existing = document.querySelector(`script[src*="${marker}"]`)
+    if (existing) {
+      existing.addEventListener('load', () => resolve())
+      existing.addEventListener('error', () => reject(new Error('验证码 SDK 加载失败')))
+      // 已加载完成但未触发事件时，下一次微任务直接放行
+      setTimeout(() => resolve(), 0)
       return
     }
-
-    // 检查是否已经有 script 标签正在加载
-    const existingScript = document.querySelector('script[src*="TJCaptcha.js"]')
-    if (existingScript) {
-      existingScript.addEventListener('load', () => resolve())
-      existingScript.addEventListener('error', () => reject(new Error('验证码 SDK 加载失败')))
-      return
-    }
-
-    // 动态创建 script 标签
     const script = document.createElement('script')
-    script.src = 'https://turing.captcha.qcloud.com/TJCaptcha.js'  // 验证码2.0 JS地址
+    script.src = src
     script.async = true
     script.onload = () => resolve()
     script.onerror = () => reject(new Error('验证码 SDK 加载失败'))
@@ -85,50 +74,58 @@ function loadCaptchaScript(): Promise<void> {
   })
 }
 
-/**
- * 显示腾讯天御验证码
- * @param appId - 从后端获取的 CaptchaAppId（字符串）
- * @returns Promise<CaptchaResult>
- */
-async function showTencentCaptcha(appId: string): Promise<CaptchaResult> {
-  // 1. 确保 SDK 已加载
-  await loadCaptchaScript()
-
+/** 腾讯天御验证码 2.0 */
+async function runTencentCaptcha(appId: string): Promise<CaptchaResultPayload> {
+  await loadScript('https://turing.captcha.qcloud.com/TJCaptcha.js', 'TJCaptcha.js')
   return new Promise((resolve, reject) => {
     try {
-      // 2. 验证 appId 是否为有效的非空字符串
-      if (!appId || typeof appId !== 'string' || appId.trim() === '') {
-        console.error('CaptchaAppId 无效:', appId)
-        reject(new Error('CaptchaAppId 格式不正确'))
-        return
-      }
-
-      // 3. 创建验证码实例并显示（TencentCaptcha 构造函数第一个参数为字符串类型的 CaptchaAppId）
-      const captcha = new window.TencentCaptcha(appId, (res: CaptchaResult) => {
-        // 回调函数处理验证结果
-        if (res.ret === 0) {
-          // 验证成功（包括正常票据和容灾票据）
-          // 注意：ticket 包含 trerror_ 前缀时表示容灾票据，
-          // 这是因为用户网络较差导致前端自动容灾生成的票据
-          // 后端应该在票据校验时根据业务需求进行处理
-          resolve(res)
-        } else if (res.ret === 2) {
-          // 用户主动关闭
-          reject(new Error('用户取消验证'))
-        } else {
-          // 其他错误
-          reject(new Error(res.errorMessage || '验证失败'))
-        }
-      }, {
-        // 可选配置项
-        needFeedBack: false,  // 不显示用户反馈按钮
-        // type: 'popup',     // popup(弹窗) 或 embed(内嵌)，默认 popup
-        // loading: true,     // 显示加载动画
-      })
-
-      // 显示验证码
+      const captcha = new window.TencentCaptcha(
+        appId,
+        (res: any) => {
+          if (res.ret === 0) {
+            resolve({ provider: 'tencent', payload: { ticket: res.ticket, randstr: res.randstr } })
+          } else if (res.ret === 2) {
+            reject(new Error('用户取消验证'))
+          } else {
+            reject(new Error(res.errorMessage || '验证失败'))
+          }
+        },
+        { needFeedBack: false }
+      )
       captcha.show()
+    } catch (error) {
+      reject(new Error('验证码初始化失败: ' + (error as Error).message))
+    }
+  })
+}
 
+/** 极验行为验证码 v4 */
+async function runGeetestCaptcha(captchaId: string): Promise<CaptchaResultPayload> {
+  await loadScript('https://static.geetest.com/v4/gt4.js', 'gt4.js')
+  return new Promise((resolve, reject) => {
+    if (!window.initGeetest4) {
+      reject(new Error('极验 SDK 加载失败'))
+      return
+    }
+    try {
+      window.initGeetest4({ captchaId, product: 'bind' }, (captcha: any) => {
+        captcha
+          .onSuccess(() => {
+            const v = captcha.getValidate() || {}
+            resolve({
+              provider: 'geetest',
+              payload: {
+                lot_number: String(v.lot_number || ''),
+                captcha_output: String(v.captcha_output || ''),
+                pass_token: String(v.pass_token || ''),
+                gen_time: String(v.gen_time || '')
+              }
+            })
+          })
+          .onError((e: any) => reject(new Error('验证失败: ' + (e?.msg || ''))))
+          .onClose(() => reject(new Error('用户取消验证')))
+        captcha.showCaptcha()
+      })
     } catch (error) {
       reject(new Error('验证码初始化失败: ' + (error as Error).message))
     }
@@ -136,25 +133,61 @@ async function showTencentCaptcha(appId: string): Promise<CaptchaResult> {
 }
 
 /**
- * 登录前触发验证码
- * @param appId - CaptchaAppId
- * @returns Promise<{ ticket: string, randstr: string }>
+ * 阿里云行为验证码 2.0。
+ * 该 SDK 采用「回调式」集成：验证通过后在 captchaVerifyCallback 中拿到 captchaVerifyParam，
+ * 本系统统一由后端接口校验（与其它通道一致），故此处仅取出参数并交由业务请求上送。
  */
-async function verifyCaptchaForLogin(appId: string): Promise<{ ticket: string, randstr: string }> {
-  const result = await showTencentCaptcha(appId)
-  return {
-    ticket: result.ticket,
-    randstr: result.randstr
-  }
+async function runAliyunCaptcha(sceneId: string): Promise<CaptchaResultPayload> {
+  await loadScript(
+    'https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js',
+    'AliyunCaptcha.js'
+  )
+  return new Promise((resolve, reject) => {
+    if (!window.AliyunCaptcha || !sceneId) {
+      reject(new Error('阿里云验证码未配置'))
+      return
+    }
+    const holderId = 'aliyun-captcha-holder'
+    let holder = document.getElementById(holderId)
+    if (!holder) {
+      holder = document.createElement('div')
+      holder.id = holderId
+      document.body.appendChild(holder)
+    }
+    try {
+      window.AliyunCaptcha({
+        SceneId: sceneId,
+        prefix: 'oem',
+        mode: 'popup',
+        element: `#${holderId}`,
+        captchaVerifyCallback: async (captchaVerifyParam: string) => {
+          resolve({ provider: 'aliyun', payload: { captcha_verify_param: captchaVerifyParam } })
+          // 返回通过以关闭弹层：真正的服务端校验在业务请求中由后端完成
+          return { captchaResult: true }
+        },
+        onBizResultCallback: () => {},
+        getInstance: () => {},
+        slideStyle: { width: 360, height: 40 },
+        language: 'cn'
+      })
+    } catch (error) {
+      reject(new Error('验证码初始化失败: ' + (error as Error).message))
+    }
+  })
 }
 
 /**
- * 快捷方法：从后端 API 获取 CaptchaAppId 并显示验证码
- * 使用方式：
- * import { verifyCaptcha } from '@/utils/captcha'
- * const { ticket, randstr } = await verifyCaptcha()
+ * 触发人机验证码并返回该通道的服务端校验参数。
+ * 使用方式：const captcha = await verifyCaptcha(); 请求体带上 captcha_payload: captcha.payload
  */
-export async function verifyCaptcha(): Promise<{ ticket: string, randstr: string }> {
-  const appId = await getCaptchaAppId()
-  return verifyCaptchaForLogin(appId)
+export async function verifyCaptcha(): Promise<CaptchaResultPayload> {
+  const config = await getCaptchaConfig()
+  switch (config.provider) {
+    case 'geetest':
+      return runGeetestCaptcha(config.captcha_id || '')
+    case 'aliyun':
+      return runAliyunCaptcha(config.scene_id || '')
+    default:
+      return runTencentCaptcha(config.app_id || '')
+  }
 }

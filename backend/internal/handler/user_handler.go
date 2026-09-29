@@ -56,17 +56,33 @@ func NewUserHandler(
 }
 
 func (h *UserHandler) sms() *service.SMSService { return h.rt.SMS() }
-func (h *UserHandler) captcha() *service.CaptchaService {
-	return h.rt.Captcha()
+func (h *UserHandler) captcha() service.CaptchaProvider {
+	return h.rt.CaptchaProvider()
+}
+
+// captchaPayload 组装验证码校验参数：优先取通用字段 captcha_payload（极验/阿里云等通道），
+// 为空时回落腾讯天御的票据与随机串旧字段，保证历史前端与插件调用不被破坏。
+func captchaPayload(payload map[string]string, ticket, randstr string) map[string]string {
+	if len(payload) > 0 {
+		return payload
+	}
+	if ticket == "" && randstr == "" {
+		return nil
+	}
+	return map[string]string{
+		service.CaptchaFieldTicket:  ticket,
+		service.CaptchaFieldRandStr: randstr,
+	}
 }
 
 // SendCode 发送短信验证码
 func (h *UserHandler) SendCode(c *gin.Context) {
 	var req struct {
-		Phone         string `json:"phone" binding:"required"`
-		CaptchaTicket string `json:"captcha_ticket" binding:"required"`  // 腾讯验证码票据
-		CaptchaRand   string `json:"captcha_randstr" binding:"required"` // 腾讯验证码随机串
-		Scene         string `json:"scene" binding:"required"`           // register / login / change_password
+		Phone          string            `json:"phone" binding:"required"`
+		CaptchaTicket  string            `json:"captcha_ticket"`  // 腾讯天御：票据（兼容旧字段）
+		CaptchaRand    string            `json:"captcha_randstr"` // 腾讯天御：随机串（兼容旧字段）
+		CaptchaPayload map[string]string `json:"captcha_payload"` // 各通道通用验证参数（极验/阿里云等）
+		Scene          string            `json:"scene" binding:"required"` // register / login / change_password
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -79,7 +95,7 @@ func (h *UserHandler) SendCode(c *gin.Context) {
 
 	// 验证人机验证码
 	remoteIP := c.ClientIP()
-	err := h.captcha().VerifyCaptcha(req.CaptchaTicket, req.CaptchaRand, remoteIP)
+	err := h.captcha().Verify(captchaPayload(req.CaptchaPayload, req.CaptchaTicket, req.CaptchaRand), remoteIP)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"code":    400,
@@ -116,9 +132,10 @@ func (h *UserHandler) Register(c *gin.Context) {
 		Username       string `json:"username" binding:"required"`
 		SMSCode        string `json:"sms_code" binding:"required"`
 		Password       string `json:"password" binding:"required"`
-		CaptchaTicket  string `json:"captcha_ticket" binding:"required"`  // 腾讯验证码票据
-		CaptchaRandstr string `json:"captcha_randstr" binding:"required"` // 腾讯验证码随机串
-		Ref            string `json:"ref"`                                // 推广码（推广链接 ?ref=XXXX，12 位数字+小写字母）；命中时按码绑定归属，未命中=平台直营
+		CaptchaTicket  string            `json:"captcha_ticket"`  // 腾讯天御：票据（兼容旧字段）
+		CaptchaRandstr string            `json:"captcha_randstr"` // 腾讯天御：随机串（兼容旧字段）
+		CaptchaPayload map[string]string `json:"captcha_payload"` // 各通道通用验证参数
+		Ref            string            `json:"ref"`             // 推广码（推广链接 ?ref=XXXX，12 位数字+小写字母）；命中时按码绑定归属，未命中=平台直营
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -140,7 +157,7 @@ func (h *UserHandler) Register(c *gin.Context) {
 
 	// 验证人机验证码
 	remoteIP := c.ClientIP()
-	err := h.captcha().VerifyCaptcha(req.CaptchaTicket, req.CaptchaRandstr, remoteIP)
+	err := h.captcha().Verify(captchaPayload(req.CaptchaPayload, req.CaptchaTicket, req.CaptchaRandstr), remoteIP)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"code":    400,
@@ -222,9 +239,10 @@ func (h *UserHandler) Login(c *gin.Context) {
 		Account        string `json:"account" binding:"required"`
 		Password       string `json:"password"`
 		SMSCode        string `json:"sms_code"`
-		LoginType      string `json:"login_type" binding:"required"`      // password / sms_code
-		CaptchaTicket  string `json:"captcha_ticket" binding:"required"`  // 腾讯验证码票据
-		CaptchaRandstr string `json:"captcha_randstr" binding:"required"` // 腾讯验证码随机串
+		LoginType      string            `json:"login_type" binding:"required"` // password / sms_code
+		CaptchaTicket  string            `json:"captcha_ticket"`                // 腾讯天御：票据（兼容旧字段）
+		CaptchaRandstr string            `json:"captcha_randstr"`               // 腾讯天御：随机串（兼容旧字段）
+		CaptchaPayload map[string]string `json:"captcha_payload"`               // 各通道通用验证参数
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -266,7 +284,7 @@ func (h *UserHandler) Login(c *gin.Context) {
 
 	// 验证人机验证码
 	remoteIP := c.ClientIP()
-	err := h.captcha().VerifyCaptcha(req.CaptchaTicket, req.CaptchaRandstr, remoteIP)
+	err := h.captcha().Verify(captchaPayload(req.CaptchaPayload, req.CaptchaTicket, req.CaptchaRandstr), remoteIP)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"code":    400,
@@ -600,10 +618,11 @@ func (h *UserHandler) ChangePassword(c *gin.Context) {
 	userID := c.GetInt64("user_id")
 
 	var req struct {
-		SMSCode        string `json:"sms_code" binding:"required"`
-		NewPassword    string `json:"new_password" binding:"required"`
-		CaptchaTicket  string `json:"captcha_ticket" binding:"required"`  // 腾讯验证码票据
-		CaptchaRandstr string `json:"captcha_randstr" binding:"required"` // 腾讯验证码随机串
+		SMSCode        string            `json:"sms_code" binding:"required"`
+		NewPassword    string            `json:"new_password" binding:"required"`
+		CaptchaTicket  string            `json:"captcha_ticket"`  // 腾讯天御：票据（兼容旧字段）
+		CaptchaRandstr string            `json:"captcha_randstr"` // 腾讯天御：随机串（兼容旧字段）
+		CaptchaPayload map[string]string `json:"captcha_payload"` // 各通道通用验证参数
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -625,7 +644,7 @@ func (h *UserHandler) ChangePassword(c *gin.Context) {
 
 	// 验证人机验证码
 	remoteIP := c.ClientIP()
-	err := h.captcha().VerifyCaptcha(req.CaptchaTicket, req.CaptchaRandstr, remoteIP)
+	err := h.captcha().Verify(captchaPayload(req.CaptchaPayload, req.CaptchaTicket, req.CaptchaRandstr), remoteIP)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"code":    400,

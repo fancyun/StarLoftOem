@@ -40,6 +40,18 @@ type Config struct {
 	FaceProvider string
 	// 企业工商四要素核验 provider：tencent-腾讯云 OCR（默认）/ aliyun-阿里云
 	EnterpriseVerifyProvider string
+	// 人机验证码通道 provider：tencent-腾讯天御（默认）/ geetest-极验 / aliyun-阿里云行为验证码
+	CaptchaProvider string
+	// 极验 CaptchaId（密钥类 CaptchaKey 见 .env）
+	GeetestCaptchaID string
+	// 阿里云验证码场景 ID（账号密钥见 .env）
+	AliyunCaptchaSceneID string
+	// 极验密钥（密钥类，只走 .env）
+	GeetestCaptchaKey string
+	// 阿里云账号密钥与云市场 AppCode（密钥类，只走 .env）
+	AliyunAccessKeyID     string
+	AliyunAccessKeySecret string
+	AliyunMarketAppCode   string
 	TencentRegion              string   // 腾讯云服务地域（如 ap-guangzhou）
 	UploadDir                  string   // 用户上传文件目录（营业执照/身份证等图片）
 	MediaDir                   string   // 人脸核验认证媒体目录（照片/视频，容器内 /app/media，bind mount 宿主 ./data/media）
@@ -151,6 +163,13 @@ const (
 	EnterpriseVerifyProviderAliyun  = "aliyun"  // 阿里云
 )
 
+// 人机验证码通道 provider 取值
+const (
+	CaptchaProviderTencent = "tencent" // 腾讯天御验证码（默认）
+	CaptchaProviderGeetest  = "geetest" // 极验行为验证码
+	CaptchaProviderAliyun   = "aliyun"  // 阿里云行为验证码
+)
+
 // PaymentChannelEnabled 在线支付渠道启用开关：1-启用 2-不启用。
 // 未配置（0）按启用处理，渠道最终是否可用仍取决于凭据是否齐全（凭据缺失时客户端不构建、渠道不可用且不影响启动）。
 func PaymentChannelEnabled(enabled int) bool {
@@ -235,6 +254,14 @@ func loadFromEnv(cfg *Config) {
 	cfg.Tencent.SecretKey = getEnv("TENCENT_SECRET_KEY", cfg.Tencent.SecretKey)
 	cfg.Tencent.Captcha.AppSecretKey = getEnv("TENCENT_CAPTCHA_SECRET", cfg.Tencent.Captcha.AppSecretKey)
 
+	// 极验行为验证码密钥（密钥类）
+	cfg.GeetestCaptchaKey = getEnv("GEETEST_CAPTCHA_KEY", cfg.GeetestCaptchaKey)
+
+	// 阿里云账号密钥与云市场 AppCode（密钥类）
+	cfg.AliyunAccessKeyID = getEnv("ALIYUN_ACCESS_KEY_ID", cfg.AliyunAccessKeyID)
+	cfg.AliyunAccessKeySecret = getEnv("ALIYUN_ACCESS_KEY_SECRET", cfg.AliyunAccessKeySecret)
+	cfg.AliyunMarketAppCode = getEnv("ALIYUN_MARKET_APPCODE", cfg.AliyunMarketAppCode)
+
 	// 数据加密密钥（敏感字段存储加密）
 	cfg.DataEncryptKey = getEnv("DATA_ENCRYPT_KEY", cfg.DataEncryptKey)
 
@@ -275,6 +302,7 @@ func loadFromEnv(cfg *Config) {
 	cfg.StarLoft.BaseURL = "https://api.starloft.cn"
 	cfg.FaceProvider = FaceProviderStarLoft
 	cfg.EnterpriseVerifyProvider = EnterpriseVerifyProviderTencent
+	cfg.CaptchaProvider = CaptchaProviderTencent
 	cfg.TencentRegion = "ap-guangzhou"
 	cfg.Tencent.Captcha.CaptchaAppID = ""
 	cfg.Alipay.Enabled = 1
