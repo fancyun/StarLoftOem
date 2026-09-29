@@ -1,0 +1,172 @@
+services:
+  # MySQL 数据库（本地容器，数据持久化到宿主 /data/mysql）
+  mysql:
+    image: mysql:8.0
+    container_name: oem_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: oem_sys
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --default-time-zone=+08:00
+    # 数据库数据持久化到项目 ./data/mysql（bind mount，升级容器不丢数据）
+    # 注意：勿挂载到网络文件系统（NFS/CFS），InnoDB 文件锁（fcntl）在 NFS 上不可靠，
+    # 会报 "Unable to lock ./ibdata1 error: 11" 导致 MySQL 无法启动。
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    # 仅容器内网暴露，供后端连接；不映射宿主端口避免公网暴露
+    expose:
+      - "3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${DB_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # Redis缓存（安全加固：强制密码 --requirepass，且不映射宿主端口，仅容器网络内可访问）
+  redis:
+    image: redis:7-alpine
+    container_name: oem_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # 后端服务——连接本地 docker-compose 编排的 MySQL 容器
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: oem_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # 服务器配置
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8080
+      GIN_MODE: ${GIN_MODE:-release}
+      
+      # 数据库配置（连接本地 MySQL 容器，host 用服务名 mysql）
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-50}
+      DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-200}
+      
+      # Redis配置（使用本地Redis容器）
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_DB: ${REDIS_DB:-0}
+      REDIS_POOL_SIZE: ${REDIS_POOL_SIZE:-10}
+      
+      # JWT配置
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ADMIN_SECRET: ${JWT_ADMIN_SECRET}
+      JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-24}
+      
+      # 敏感字段数据加密密钥（AES-256-GCM，32 字节）
+      DATA_ENCRYPT_KEY: ${DATA_ENCRYPT_KEY}
+      
+      # FinAuth 实名认证密钥（密钥类；场景 ID / 接口基址等非密钥配置在后台「系统设置」维护）
+      FINAUTH_API_KEY: ${FINAUTH_API_KEY}
+      FINAUTH_API_SECRET: ${FINAUTH_API_SECRET}
+
+      # 待支付订单过期分钟数（超时自动向渠道撤回支付并关闭本地订单）
+      PAYMENT_EXPIRE_MINUTES: ${PAYMENT_EXPIRE_MINUTES:-30}
+
+      # 联麓信息（shlianlu）短信 AppKey（密钥类；MchId / AppId / 基址等在后台「系统设置」维护）
+      SHLIANLU_KEY: ${SHLIANLU_KEY:-}
+
+      # 腾讯云账号密钥（密钥类；验证码 AppID / 地域 / 平台短信与法人扫脸参数在后台「系统设置」维护）
+      TENCENT_SECRET_ID: ${TENCENT_SECRET_ID}
+      TENCENT_SECRET_KEY: ${TENCENT_SECRET_KEY}
+      TENCENT_CAPTCHA_SECRET: ${TENCENT_CAPTCHA_SECRET}
+
+      # 支付宝支付证书（密钥类；AppID 等在后台「系统设置」维护）
+      ALIPAY_PRIVATE_KEY: ${ALIPAY_PRIVATE_KEY}
+      ALIPAY_PUBLIC_KEY: ${ALIPAY_PUBLIC_KEY}
+      
+      # 日志目录（容器内 /app/logs，挂载宿主 /data/logs）
+      LOG_DIR: /app/logs
+
+      # 上传文件目录（容器内 /app/uploads，bind mount 到宿主 ./data/uploads）
+      UPLOAD_DIR: /app/uploads
+
+      # 认证媒体目录（容器内 /app/media，bind mount 到宿主 ./data/media）：人脸核验照片/视频
+      MEDIA_DIR: /app/media
+
+      # 证书目录（容器内 /app/certs，bind mount 到宿主 ./certs，只读）
+      # PEM 证书以文件形式存放于此，文件缺失时回落 .env 中的字面值
+      CERTS_DIR: /app/certs
+      
+      # 时区
+      TZ: Asia/Shanghai
+    volumes:
+      # 日志 bind mount 到宿主 ./data/logs（持久化，便于宿主机直接查看/收集）。
+      # bind mount 会覆盖镜像内 /app/logs 属主，需保证宿主目录属主为 uid 1000（app）可写：
+      #   mkdir -p ./data/logs && chown -R 1000:1000 ./data/logs
+      - ./data/logs:/app/logs
+      # 上传文件 bind mount 到宿主 ./data/uploads（持久化），需保证宿主目录属主为 uid 1000（app）
+      # 以便容器内 app 用户可写：mkdir -p ./data/uploads && chown -R 1000:1000 ./data/uploads
+      - ./data/uploads:/app/uploads
+      # 认证媒体 bind mount 到宿主 ./data/media（持久化），需保证宿主目录属主为 uid 1000（app）
+      # 以便容器内 app 用户可写：mkdir -p ./data/media && chown -R 1000:1000 ./data/media
+      - ./data/media:/app/media
+      # 证书 bind mount 到宿主 ./certs（只读）：PEM 证书以文件形式集中存放，便于替换与轮换
+      - ./certs:/app/certs:ro
+    # 后端不映射宿主端口，仅容器内网由 Nginx 反代（proxy_pass http://backend:8080）
+    expose:
+      - "8080"
+    # 就绪探针：依赖的 DB/Redis 均可用时 /readyz 才返回 200（用于 depends_on)
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/readyz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # 本地化 Nginx（多站点）——监听 3000（HTTP，无证书），按域名分发各前端并为后端反代。
+  # 3000 绑定 0.0.0.0（见下方 ports），可对公网直接提供：部署方可自建 HTTPS 反代指向本端口（需透传
+  # Host / X-Forwarded-For / X-Forwarded-Proto），平台侧也可由 1Panel 反代到 http://127.0.0.1:3000。
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend-console/Dockerfile
+      shm_size: '2gb'  # 增加共享内存
+    container_name: oem_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    # 存活探针：局部 Nginx 监听 3000，/healthz 响应即通过（liveness）
+    # 用 127.0.0.1 而非 localhost：容器内 localhost 会解析到 ::1 而 nginx 仅监听 IPv4，导致 Connection refused
+    # start_period：容器启动后先给 nginx 就绪时间，期间失败不计入重试，避免大镜像加载慢导致的误判 unhealthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

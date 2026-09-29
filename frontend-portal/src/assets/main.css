@@ -1,0 +1,22 @@
+/* Element Plus 主题覆盖（配合 base.css 腾讯云设计令牌） */
+@import './base.css';
+
+/* 全局入口：统一页面容器默认背景（App / router-view 外层） */
+#app {
+  min-height: 100vh;
+  background: var(--bg-page);
+}
+
+/* ========== 全局统一品牌标（logo.jpg） ========== */
+.brand-logo {
+  display: inline-block;
+  height: 28px;
+  width: auto;
+  object-fit: contain;
+}
+
+/* 大号品牌标（登录/注册页横幅） */
+.brand-logo.lg {
+  height: 48px;
+  width: auto;
+}

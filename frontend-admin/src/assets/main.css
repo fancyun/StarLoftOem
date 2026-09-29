@@ -1,0 +1,260 @@
+/* Element Plus 主题覆盖（配合 base.css 腾讯云设计令牌） */
+@import './base.css';
+
+/* 全局入口：统一页面容器默认背景（App / router-view 外层） */
+#app {
+  min-height: 100vh;
+  background: var(--bg-page);
+}
+
+/* ========== 全局统一 Element Plus 主题色 ========== */
+/* 覆盖所有组件默认蓝 #409EFF，全站统一为腾讯云蓝 */
+:root {
+  --el-color-primary: #1CD5C7;
+  --el-color-primary-light-3: #60E2D8;
+  --el-color-primary-light-5: #8EEAE3;
+  --el-color-primary-light-7: #BBF2EE;
+  --el-color-primary-light-8: #D2F7F4;
+  --el-color-primary-light-9: #E8FBF9;
+  --el-color-primary-dark-2: #17AA9F;
+
+  --el-color-success: #00A870;
+  --el-color-success-light-9: #E3F9E9;
+  --el-color-warning: #FF9D00;
+  --el-color-warning-light-9: #FFF7E8;
+  --el-color-danger: #F54A45;
+  --el-color-danger-light-9: #FFECE8;
+  --el-color-error: #F54A45;
+  --el-color-error-light-9: #FFECE8;
+  --el-color-info: #4E5969;
+  --el-color-info-light-9: #F2F3F5;
+
+  /* Element 中性色与腾讯云灰阶统一 */
+  --el-text-color-primary: #1D2129;
+  --el-text-color-regular: #4E5969;
+  --el-text-color-secondary: #86909C;
+  --el-text-color-placeholder: #A9AEB8;
+  --el-text-color-disabled: #C9CDD4;
+  --el-border-color: #E5E6EB;
+  --el-border-color-light: #E5E6EB;
+  --el-border-color-lighter: #F2F3F5;
+  --el-border-color-extra-light: #F5F7FA;
+  --el-fill-color-blank: #FFFFFF;
+  --el-fill-color-light: #F7F8FA;
+  --el-bg-color: #FFFFFF;
+  --el-bg-color-page: #F5F7FA;
+  --el-border-radius-base: 4px;
+}
+
+/* ========== 按钮 ========== */
+.el-button {
+  border-radius: var(--radius-sm);
+}
+
+/* 链接型按钮/文字 */
+.el-link.el-link--primary {
+  --el-link-color: var(--color-primary);
+  --el-link-hover-color: var(--color-primary-hover);
+}
+
+/* Element 输入框聚焦时的主色 */
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--border-focus) inset !important;
+}
+
+/* ========== 菜单 ========== */
+.el-menu {
+  --el-menu-active-color: var(--color-primary);
+  --el-menu-hover-bg-color: var(--bg-hover);
+  --el-menu-bg-color: transparent;
+  --el-menu-text-color: var(--text-secondary);
+}
+
+/* ========== Tag 语义色柔和化 ========== */
+.el-tag {
+  --el-tag-border-color: transparent;
+  font-weight: 500;
+}
+
+.el-tag--success {
+  --el-tag-background: var(--color-success-light);
+  --el-tag-text-color: var(--color-success);
+}
+.el-tag--warning {
+  --el-tag-background: var(--color-warning-light);
+  --el-tag-text-color: var(--color-warning);
+}
+.el-tag--danger {
+  --el-tag-background: var(--color-danger-light);
+  --el-tag-text-color: var(--color-danger);
+}
+.el-tag--info {
+  --el-tag-background: var(--color-info-light);
+  --el-tag-text-color: var(--color-info);
+}
+
+/* ========== 卡片：干净克制 ========== */
+.el-card {
+  border-radius: var(--radius-lg) !important;
+  border: 1px solid var(--border-color) !important;
+  box-shadow: var(--shadow-sm) !important;
+  transition: box-shadow 0.15s ease;
+}
+.el-card:hover {
+  box-shadow: var(--shadow-md) !important;
+}
+.el-card__header {
+  border-bottom: 1px solid var(--border-light) !important;
+  padding: 14px 20px !important;
+  font-weight: 600;
+}
+.el-card__body {
+  padding: 20px !important;
+}
+
+/* ========== 全局统一品牌标（蓝底白字 SL） ========== */
+.brand-logo {
+  display: inline-block;
+  height: 28px;
+  width: auto;
+  object-fit: contain;
+}
+
+/* 大号品牌标（登录/注册页横幅） */
+.brand-logo.lg {
+  height: 48px;
+  width: auto;
+}
+
+/* ========== 全局统一卡片（用户端/管理端通用） ========== */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.15s;
+}
+.card:hover {
+  box-shadow: var(--shadow-md);
+}
+
+/* ========== 全局统一卡片标题（带图标 + 下边框） ========== */
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-light);
+}
+
+/* 标题与右侧操作按钮/过滤项同行：由 .card-head 提供下边框，标题本身去边框 */
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-light);
+}
+.card-head .section-title {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+/* ========== 全局统一页头筛选行 ========== */
+.filter-bar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+/* ========== 表格 ========== */
+.el-table {
+  --el-table-border-color: var(--border-light);
+  --el-table-header-bg-color: var(--bg-soft);
+  --el-table-row-hover-bg-color: var(--bg-hover);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: #fff;
+}
+
+/* ========== Tabs ========== */
+.el-tabs__item.is-active {
+  color: var(--color-primary);
+}
+.el-tabs__active-bar {
+  background-color: var(--color-primary);
+}
+.el-tabs__item:hover {
+  color: var(--color-primary-hover);
+}
+
+/* ========== Dropdown ========== */
+.el-dropdown-menu {
+  border-radius: var(--radius-md) !important;
+  border: 1px solid var(--border-color) !important;
+  box-shadow: var(--shadow-md) !important;
+}
+
+/* ========== 弹窗/抽屉 ========== */
+.el-dialog {
+  border-radius: var(--radius-lg);
+}
+.el-message-box {
+  border-radius: var(--radius-lg);
+}
+
+/* ========== 通用布局类 ========== */
+.page-wrapper {
+  padding: var(--gap-lg);
+  background: var(--bg-page);
+  min-height: 100%;
+}
+
+/* 通用统计卡片网格（admin dashboard 用） */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--gap-lg);
+}
+
+/* ========== 列表页撑满内容区（表格自适应高度，分页固定底部，不留空白） ========== */
+/* 页面根节点：占满主内容区高度 */
+.page-fill {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 承载表格的卡片：撑满剩余高度，内部纵向排布 */
+.card-fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 表格容器：随卡片撑满（内部 el-table 用 height="100%"） */
+.table-fill {
+  flex: 1;
+  min-height: 0;
+}
+.card-fill .el-pagination {
+  flex-shrink: 0;
+}
+
+/* 通用工具类 */
+.text-muted { color: var(--text-muted); }
+.text-secondary { color: var(--text-secondary); }
+.mt-md { margin-top: var(--gap-md); }
+.mb-md { margin-bottom: var(--gap-md); }
+.mb-lg { margin-bottom: var(--gap-lg); }

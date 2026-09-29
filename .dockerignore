@@ -1,0 +1,24 @@
+# 前端镜像（frontend-console/Dockerfile）构建上下文为仓库根目录，
+# 仅需要 frontend-portal、frontend-console、frontend-admin、frontend-service 四个前端源码，其余一律排除以减小上下文体积
+.git
+.gitignore
+.gitattributes
+
+# 后端与插件（非前端镜像所需）
+backend
+plugin
+
+# 部署配置与数据
+certs
+.env
+.env.example
+data
+logs
+docker-compose.yml
+README.md
+更新文档.md
+
+# 依赖与构建产物
+**/node_modules
+**/dist
+*.log
