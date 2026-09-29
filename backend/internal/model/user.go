@@ -32,7 +32,13 @@ type User struct {
 	// 实名免费次数重置基准：剩余免费次数 = 免费上限(3) - (已发起核验次数 - 基准)；管理员重置时把基准设为当前已用次数。
 	PersonalFreeBase   int       `json:"personal_free_base" gorm:"not null;default:0"`   // 个人实名免费次数基准偏移
 	EnterpriseFreeBase int       `json:"enterprise_free_base" gorm:"not null;default:0"` // 企业实名免费次数基准偏移
-	CreatedAt          time.Time `json:"created_at" gorm:"autoCreateTime"`
+	// 微信一键登录绑定（同一微信号仅绑定一个账号；未绑定时均为 NULL）
+	// 可空 + 唯一索引：MySQL 唯一索引不对 NULL 去重，故未绑定行互不冲突；解绑须写 NULL 而非空串
+	WechatUnionID    sql.NullString `json:"-" gorm:"size:64;uniqueIndex:uk_user_wechat_unionid"`     // 微信 unionid（同一开放平台账号下唯一，可能为空）
+	WechatMPOpenID   sql.NullString `json:"-" gorm:"size:64;uniqueIndex:uk_user_wechat_mp_openid"`   // 公众号网页授权 openid（手机端一键登录）
+	WechatOpenOpenID sql.NullString `json:"-" gorm:"size:64;uniqueIndex:uk_user_wechat_open_openid"` // 开放平台网站应用 openid（PC 扫码登录）
+	WechatNickname   sql.NullString `json:"-" gorm:"size:64"`                                        // 微信昵称（扫码登录时取回，可为空）
+	CreatedAt        time.Time      `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt          time.Time `json:"updated_at" gorm:"autoUpdateTime"`
 }
 

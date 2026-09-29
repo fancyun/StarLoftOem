@@ -134,6 +134,18 @@
           </el-tab-pane>
         </el-tabs>
 
+        <!-- 微信一键登录：仅在后端已配置对应端凭据时展示；点击后按环境自动走手机端授权或 PC 扫码 -->
+        <div v-if="wechatLoginVisible" class="wechat-login">
+          <div class="wechat-divider"><span>其他登录方式</span></div>
+          <el-button class="wechat-btn" size="large" :loading="wechatLoading" @click="handleWechatLogin">
+            <svg class="wechat-icon" viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+              <path d="M8.7 3C4.6 3 1.3 5.8 1.3 9.2c0 1.9 1.1 3.6 2.8 4.8l-.7 2.1 2.4-1.2c.9.3 1.9.4 2.9.4h.4a5.6 5.6 0 0 1-.2-1.5c0-3.2 3.1-5.8 6.9-5.8h.6C15.7 5.2 12.5 3 8.7 3Zm-2.4 3.4a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8Zm4.8 0a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8Z" />
+              <path d="M22.7 14.1c0-2.8-2.8-5.1-6.2-5.1s-6.2 2.3-6.2 5.1 2.8 5.1 6.2 5.1c.8 0 1.5-.1 2.2-.3l1.9 1-.5-1.7c1.6-.9 2.6-2.4 2.6-4.1Zm-8.2-1.5a.8.8 0 1 1 0 1.5.8.8 0 0 1 0-1.5Zm4 0a.8.8 0 1 1 0 1.5.8.8 0 0 1 0-1.5Z" />
+            </svg>
+            微信登录
+          </el-button>
+        </div>
+
         <div class="form-footer">
           <span class="footer-text">还没有账号？</span>
           <router-link to="/register" class="footer-link">立即注册</router-link>
@@ -149,14 +161,15 @@
 
 <script setup lang="ts">
 import { reactive, ref, shallowRef, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance } from 'element-plus'
-import { userAPI } from '@/api'
+import { publicAPI, userAPI } from '@/api'
 import { useUserStore } from '@/stores/user'
 import { resetCaptchaCache, verifyCaptcha } from '@/utils/captcha'
 import { resolvePromotion, siteBase, siteState } from '@/utils/promotion'
 import { brandState } from '@/utils/brand'
 
+const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 const activeTab = ref('password')
@@ -164,6 +177,9 @@ const loading = ref(false)
 const countdown = ref(0)
 const passwordFormRef = ref<FormInstance>()
 const smsFormRef = ref<FormInstance>()
+// 微信一键登录：可用性由后端 /config 下发（对应端凭据未配置时不展示入口）
+const wechatLoginVisible = ref(false)
+const wechatLoading = ref(false)
 // 命中推广品牌时展示其品牌名
 const promotionName = ref('')
 // 品牌区标题/副标题：均取自后端下发的品牌配置（后台「系统设置 → 品牌与域名」维护）
@@ -259,7 +275,39 @@ const sendCode = async () => {
   }
 }
 
+// 发起微信一键登录：scene 留空由后端按环境判定（微信内置浏览器走手机端授权，否则 PC 扫码）
+const handleWechatLogin = async () => {
+  if (wechatLoading.value) return
+  wechatLoading.value = true
+  try {
+    const res: any = await userAPI.wechatAuthorize()
+    if (!res?.authorize_url) throw new Error('未获取到微信授权地址')
+    window.location.href = res.authorize_url
+  } catch (error: any) {
+    ElMessage.error(error?.message || '微信登录发起失败')
+    wechatLoading.value = false
+  }
+}
+
 onMounted(async () => {
+  // 授权回调失败/过期时后端会带 wechat 参数跳回登录页，此处提示一次
+  const wechatFlag = String(route.query.wechat || '')
+  if (wechatFlag) {
+    const messages: Record<string, string> = {
+      expired: '微信登录已超时，请重新发起',
+      failed: '微信登录失败，请重试或改用其它方式登录'
+    }
+    ElMessage.error(messages[wechatFlag] || '微信登录失败')
+    router.replace('/login')
+  }
+
+  try {
+    const config: any = await publicAPI.getConfig()
+    wechatLoginVisible.value = Boolean(config?.wechat_login?.mp || config?.wechat_login?.open)
+  } catch (error) {
+    console.error(error)
+  }
+
   const promotion = await resolvePromotion()
   if (promotion) promotionName.value = promotion.name
 })
@@ -549,6 +597,50 @@ onMounted(async () => {
 .submit-btn:not(:disabled):hover {
   transform: translateY(-1px);
   box-shadow: 0 4px 14px rgba(0, 110, 255, 0.35);
+}
+
+/* ========== 微信一键登录 ========== */
+.wechat-login {
+  margin-top: 8px;
+}
+
+.wechat-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.wechat-divider::before,
+.wechat-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-light);
+}
+
+.wechat-btn {
+  width: 100%;
+  height: 44px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #07c160;
+  border-color: #07c160;
+  background: transparent;
+}
+
+.wechat-btn:hover,
+.wechat-btn:focus {
+  color: #07c160;
+  border-color: #07c160;
+  background: rgba(7, 193, 96, 0.06);
+}
+
+.wechat-icon {
+  margin-right: 6px;
 }
 
 /* ========== 底部链接 ========== */

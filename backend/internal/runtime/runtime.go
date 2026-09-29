@@ -34,7 +34,9 @@ type snapshot struct {
 
 	alipay    *upstream.AlipayClient
 	wechatPay *upstream.WechatPayClient
-	sms       *service.SMSService
+	// wechatOAuth 微信一键登录（手机端公众号网页授权 / PC 开放平台扫码）
+	wechatOAuth *upstream.WechatOAuthClient
+	sms         *service.SMSService
 	// captchaProvider 人机验证码通道（天御 / 极验 / 阿里云，按后台配置切换）
 	captchaProvider service.CaptchaProvider
 	smsPrice        float64
@@ -125,6 +127,21 @@ func New(cfg *config.Config) (*Runtime, error) {
 			log.Printf("构建微信支付客户端失败，微信支付暂时不可用: %v", e)
 		} else {
 			s.wechatPay = wechatPayClient
+		}
+	}
+
+	// 微信一键登录（公众号网页授权 + 开放平台扫码）：开关启用且至少配置一套 AppID 时构建；
+	// 具体场景是否可用由客户端按各端 AppID/AppSecret 是否齐备判定
+	if config.PaymentChannelEnabled(cfg.WechatLogin.Enabled) &&
+		(cfg.WechatLogin.MPAppID != "" || cfg.WechatLogin.OpenAppID != "") {
+		wechatOAuthClient, e := upstream.NewWechatOAuthClient(
+			cfg.WechatLogin.MPAppID, cfg.WechatLogin.MPAppSecret,
+			cfg.WechatLogin.OpenAppID, cfg.WechatLogin.OpenAppSecret,
+		)
+		if e != nil {
+			log.Printf("构建微信登录客户端失败，微信一键登录暂时不可用: %v", e)
+		} else {
+			s.wechatOAuth = wechatOAuthClient
 		}
 	}
 
@@ -222,6 +239,13 @@ func (rt *Runtime) WechatPay() *upstream.WechatPayClient {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 	return rt.snp.wechatPay
+}
+
+// WechatOAuth 返回当前生效的微信登录客户端（未配置时为 nil）。
+func (rt *Runtime) WechatOAuth() *upstream.WechatOAuthClient {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return rt.snp.wechatOAuth
 }
 
 // SMS 返回当前生效的短信服务（平台验证码）。

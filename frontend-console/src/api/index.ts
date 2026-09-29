@@ -32,6 +32,36 @@ export const userAPI = {
     return request.post('/login', data)
   },
 
+  // 微信一键登录：发起授权（scene 留空由后端按 UA 判定手机端/PC 端，返回 authorize_url）
+  wechatAuthorize: (scene?: string): Promise<any> => {
+    return request.get('/wechat/authorize', { params: scene ? { scene } : {} })
+  },
+
+  // 微信一键登录：用一次性票据换取登录态（票据由回调中转页携带）
+  wechatTicket: (data: { ticket: string }) => {
+    return request.post('/wechat/ticket', data)
+  },
+
+  // 微信一键登录：未绑定时用手机号 + 短信验证码绑定已有账号
+  wechatBind: (data: { bind_ticket: string; phone: string; sms_code: string }) => {
+    return request.post('/wechat/bind', data)
+  },
+
+  // 微信绑定状态（登录态，返回公众号/开放平台两端是否已绑定与昵称）
+  getWechatBinding: (): Promise<any> => {
+    return request.get('/wechat/binding')
+  },
+
+  // 发起微信绑定（登录态，scene: mp-公众号 pc-开放平台，返回 authorize_url）
+  wechatBindAuthorize: (scene: string): Promise<any> => {
+    return request.get('/wechat/bind-authorize', { params: { scene } })
+  },
+
+  // 解除微信绑定（scene: mp-公众号 pc-开放平台）
+  unbindWechat: (scene: string) => {
+    return request.delete('/wechat/binding', { params: { scene } })
+  },
+
   // 获取用户信息
   getProfile: () => {
     return request.get('/profile')

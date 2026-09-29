@@ -30,19 +30,104 @@
           </el-form-item>
         </el-form>
       </div>
+
+      <div class="card">
+        <h3 class="section-title">
+          <el-icon><ChatDotRound /></el-icon>
+          微信绑定
+        </h3>
+        <p class="section-tip">
+          绑定后可使用微信一键登录本账号。公众号（手机端）与开放平台（PC 扫码）两端可分别绑定。
+        </p>
+
+        <div class="bind-row">
+          <div class="bind-info">
+            <span class="bind-name">微信公众号（手机端）</span>
+            <el-tag v-if="binding.mp_bound" type="success" size="small">已绑定</el-tag>
+            <el-tag v-else type="info" size="small">未绑定</el-tag>
+          </div>
+          <el-button v-if="binding.mp_bound" size="small" @click="handleUnbind('mp')">解除绑定</el-button>
+          <el-button v-else size="small" type="primary" :disabled="!inWechat" @click="handleBind('mp')">
+            立即绑定
+          </el-button>
+        </div>
+        <p v-if="!binding.mp_bound && !inWechat" class="bind-note">
+          公众号绑定需在微信客户端内打开本页后操作。
+        </p>
+
+        <div class="bind-row">
+          <div class="bind-info">
+            <span class="bind-name">微信开放平台（PC 扫码）</span>
+            <el-tag v-if="binding.open_bound" type="success" size="small">已绑定</el-tag>
+            <el-tag v-else type="info" size="small">未绑定</el-tag>
+          </div>
+          <el-button v-if="binding.open_bound" size="small" @click="handleUnbind('pc')">解除绑定</el-button>
+          <el-button v-else size="small" type="primary" @click="handleBind('pc')">立即绑定</el-button>
+        </div>
+        <p v-if="binding.nickname" class="bind-note">微信昵称：{{ binding.nickname }}</p>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { userAPI } from '@/api'
 import { verifyCaptcha } from '@/utils/captcha'
+
+const route = useRoute()
+const router = useRouter()
 
 const passwordLoading = ref(false)
 const countdown = ref(0)
 const phone = ref('')
+
+// 微信绑定状态（公众号/开放平台两端）
+const binding = ref({ mp_bound: false, open_bound: false, nickname: '' })
+// 公众号网页授权只能在微信客户端内完成，故非微信环境禁用该端绑定
+const inWechat = /MicroMessenger/i.test(navigator.userAgent)
+
+const loadBinding = async () => {
+  try {
+    const res: any = await userAPI.getWechatBinding()
+    binding.value = {
+      mp_bound: Boolean(res?.mp_bound),
+      open_bound: Boolean(res?.open_bound),
+      nickname: res?.nickname || ''
+    }
+  } catch (error) {
+    console.error(error)
+  }
+}
+
+const handleBind = async (scene: string) => {
+  try {
+    const res: any = await userAPI.wechatBindAuthorize(scene)
+    if (!res?.authorize_url) throw new Error('未获取到微信授权地址')
+    window.location.href = res.authorize_url
+  } catch (error: any) {
+    ElMessage.error(error?.message || '发起绑定失败')
+  }
+}
+
+const handleUnbind = async (scene: string) => {
+  try {
+    await ElMessageBox.confirm('解除绑定后将无法使用微信一键登录，确认解除？', '解除微信绑定', {
+      type: 'warning'
+    })
+  } catch {
+    return
+  }
+  try {
+    await userAPI.unbindWechat(scene)
+    ElMessage.success('已解除绑定')
+    await loadBinding()
+  } catch (error: any) {
+    ElMessage.error(error?.message || '解除绑定失败')
+  }
+}
 
 const passwordForm = reactive({
   sms_code: '',
@@ -98,6 +183,16 @@ const handleChangePassword = async () => {
 }
 
 onMounted(async () => {
+  // 绑定回调跳回本页时带 wechat 参数，提示一次并清理地址栏参数
+  const wechatFlag = String(route.query.wechat || '')
+  if (wechatFlag) {
+    if (wechatFlag === 'bound') ElMessage.success('微信绑定成功')
+    else if (wechatFlag === 'conflict') ElMessage.error('该微信已绑定其它账号，请先在该账号解除绑定')
+    router.replace('/settings')
+  }
+
+  await loadBinding()
+
   try {
     const profile: any = await userAPI.getProfile()
     phone.value = profile.phone || ''
@@ -141,5 +236,43 @@ onMounted(async () => {
   padding: 0;
   font-size: 13px;
   white-space: nowrap;
+}
+
+/* ========== 微信绑定 ========== */
+.section-tip {
+  margin: -4px 0 20px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.bind-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.bind-row:last-of-type {
+  border-bottom: none;
+}
+
+.bind-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.bind-name {
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.bind-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 </style>

@@ -13,6 +13,7 @@ import (
 	"oemrpa/internal/repository"
 	"oemrpa/internal/runtime"
 	"oemrpa/internal/site"
+	"oemrpa/internal/upstream"
 )
 
 type PublicHandler struct {
@@ -53,10 +54,22 @@ func (h *PublicHandler) GetPublicConfig(c *gin.Context) {
 			"fv_self_price":    h.rt.FvSelfPrice(),    // 下游无源人脸核验单价（前端展示用）
 			"fv_upstream_base": h.rt.UpstreamFvBase(), // 上游平台人脸核验承接页基址（承接页据此拼接 /auth|/self 跳转）
 			"payment_channels": channels,              // 已启用的在线支付渠道
+			"wechat_login":     h.wechatLogin(),       // 微信一键登录各端可用性
 			"contact":          h.contact(),           // 客服联系方式（门户首页展示）
 			"brand":            h.brand(),             // 品牌与站点域名（各前端展示内容）
 		},
 	})
+}
+
+// wechatLogin 微信一键登录各端可用性（按各端 AppID/AppSecret 是否齐备判定，前端据此决定入口可见性）
+func (h *PublicHandler) wechatLogin() gin.H {
+	cli := h.rt.WechatOAuth()
+	mp, open := false, false
+	if cli != nil {
+		mp = cli.Available(upstream.SceneMP)
+		open = cli.Available(upstream.ScenePC)
+	}
+	return gin.H{"mp": mp, "open": open}
 }
 
 // contact 客服联系方式：实时读取系统库配置表（后台「系统设置 → 客服联系方式」维护），

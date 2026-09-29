@@ -189,6 +189,9 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 
 	// 初始化 JWT Manager
 	jwtManager := utils.NewJWTManager(cfg.JWT.Secret)
+
+	// 微信一键登录（手机端公众号网页授权 / PC 开放平台扫码）
+	wechatLoginHandler := handler.NewWechatLoginHandler(rt, userRepo, userService, jwtManager, loginLogRepo)
 	signMgr := utils.NewSignatureManager()
 
 	// 初始化 Handler
@@ -255,6 +258,12 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 		console.POST("/register", userHandler.Register)
 		console.POST("/login", userHandler.Login)
 
+		// 微信一键登录（手机端公众号网页授权 / PC 开放平台扫码）：登录前可调；ticket/bind 限流防刷
+		console.GET("/wechat/authorize", wechatLoginHandler.WechatAuthorize)
+		console.GET("/wechat/callback", wechatLoginHandler.WechatCallback)
+		console.POST("/wechat/ticket", middleware.RateLimiterForIP(10), wechatLoginHandler.WechatTicket)
+		console.POST("/wechat/bind", middleware.RateLimiterForIP(10), wechatLoginHandler.WechatBind)
+
 		// 需要JWT认证的路由
 		auth := console.Group("", middleware.JWTAuth(cfg.JWT.Secret))
 		{
@@ -279,6 +288,10 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 			auth.PUT("/api-keys/:id", userHandler.UpdateAPIKey)
 			auth.DELETE("/api-keys/:id", userHandler.DeleteAPIKey)
 			auth.POST("/change-password", userHandler.ChangePassword)
+			// 微信绑定（账户设置页，登录态下发起绑定/解绑并查询绑定状态）
+			auth.GET("/wechat/binding", wechatLoginHandler.WechatBinding)
+			auth.GET("/wechat/bind-authorize", wechatLoginHandler.WechatBindAuthorize)
+			auth.DELETE("/wechat/binding", wechatLoginHandler.WechatUnbind)
 			// 人脸核验（Web 用户发起，返回自站链接）
 			auth.POST("/fv", authHandler.StartFvAuthForWeb)
 			// 短信签名提交（Web 用户）

@@ -21,7 +21,9 @@ type Config struct {
 	Tencent   TencentConfig
 	Alipay    AlipayConfig
 	WechatPay WechatPayConfig
-	Log       LogConfig
+	// 微信一键登录（公众号网页授权 / 开放平台网站应用扫码）
+	WechatLogin WechatLoginConfig
+	Log         LogConfig
 	SMSPrice    float64 // 平台短信单价（元/条），短信计费使用（存短信产品库 product_config）
 	FvAuthPrice float64 // 下游有源人脸核验单价（元/次，存人脸核验产品库 product_config，未配置时按内置默认值兜底）
 	FvSelfPrice float64 // 下游无源人脸核验单价（元/次，存人脸核验产品库 product_config，未配置时按内置默认值兜底）
@@ -168,6 +170,19 @@ type WechatPayConfig struct {
 	PublicKey       string // 微信支付公钥（PEM，用于回调验签）
 }
 
+// WechatLoginConfig 微信一键登录配置。
+// 与微信支付是两套独立的应用：手机端走公众号网页授权（MPAppID），PC 端走开放平台网站应用扫码（OpenAppID）；
+// 两套 AppSecret 均为密钥类，只由 .env 提供；开关与 AppID 存系统库 setting。
+// 注意：微信后台「网页授权域名」/「授权回调域」只允许登记少量域名（且为域名、不含路径），
+// 回跳地址由 site.Platform().ConsoleBase() 推导，品牌主域变更后必须同步到微信后台重配，否则报 redirect_uri 参数错误。
+type WechatLoginConfig struct {
+	Enabled       int    // 启用开关：1-启用 2-不启用
+	MPAppID       string // 公众号 AppID（手机端网页授权）
+	MPAppSecret   string // 公众号 AppSecret（密钥，只走 .env）
+	OpenAppID     string // 开放平台网站应用 AppID（PC 扫码登录）
+	OpenAppSecret string // 开放平台网站应用 AppSecret（密钥，只走 .env）
+}
+
 // 账户实名人脸核身 provider 取值
 const (
 	FaceProviderStarLoft = "starloft" // 上游 StarLoft 平台开放 API（默认）
@@ -295,6 +310,10 @@ func loadFromEnv(cfg *Config) {
 	cfg.WechatPay.MerchantPrivKey = loadPEM(cfg.CertsDir, "wechat/mch_private_key.pem", getEnv("WECHAT_MCH_PRIVATE_KEY", cfg.WechatPay.MerchantPrivKey))
 	cfg.WechatPay.PublicKey = loadPEM(cfg.CertsDir, "wechat/wechat_public_key.pem", getEnv("WECHAT_PUBLIC_KEY", cfg.WechatPay.PublicKey))
 
+	// 微信一键登录（网页授权 / 扫码登录）：两套 AppSecret 为密钥类，只走本文件；开关与 AppID 见文末默认值块
+	cfg.WechatLogin.MPAppSecret = getEnv("WECHAT_LOGIN_MP_APP_SECRET", cfg.WechatLogin.MPAppSecret)
+	cfg.WechatLogin.OpenAppSecret = getEnv("WECHAT_LOGIN_OPEN_APP_SECRET", cfg.WechatLogin.OpenAppSecret)
+
 	// 日志配置
 	cfg.Log.Dir = getEnv("LOG_DIR", cfg.Log.Dir)
 
@@ -324,6 +343,7 @@ func loadFromEnv(cfg *Config) {
 	cfg.Tencent.Captcha.CaptchaAppID = ""
 	cfg.Alipay.Enabled = 1
 	cfg.WechatPay.Enabled = 1
+	cfg.WechatLogin.Enabled = 1
 	cfg.SMSPrice = 0.05
 	cfg.FvAuthPrice = 1.00
 	cfg.FvSelfPrice = 0.80

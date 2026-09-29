@@ -16,6 +16,19 @@ const routes: Array<RouteRecordRaw> = [
     name: 'Register',
     component: () => import('@/views/user/Register.vue')
   },
+  // 微信一键登录中转页（公开路由）：微信授权回跳后凭一次性票据换取登录态；
+  // 路径不能以 /console 开头（该前缀会被 Nginx 反代到后端，SPA 不渲染）
+  {
+    path: '/wechat/callback',
+    name: 'WechatCallback',
+    component: () => import('@/views/user/WechatCallback.vue')
+  },
+  // 微信未绑定时的绑定已有账号页（公开路由）
+  {
+    path: '/wechat/bind',
+    name: 'WechatBind',
+    component: () => import('@/views/user/WechatBind.vue')
+  },
   // 控制台（需登录）
   {
     path: '/',

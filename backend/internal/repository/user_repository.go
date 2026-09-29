@@ -3,6 +3,7 @@ package repository
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"oemrpa/internal/model"
@@ -13,6 +14,8 @@ var (
 	ErrUserNotFound      = errors.New("user not found")
 	ErrUserAlreadyExists = errors.New("user already exists")
 	ErrInvalidCredential = errors.New("invalid credential")
+	// ErrWechatAlreadyBound 该微信号已绑定到其它账号（唯一索引冲突时返回）
+	ErrWechatAlreadyBound = errors.New("wechat already bound")
 )
 
 type UserRepository struct {
@@ -54,7 +57,7 @@ func (r *UserRepository) CreateUser(user *model.User) error {
 }
 
 // userColumns 平台用户常用查询列
-const userColumns = `id, phone, username, password_hash, balance, realname_status, verified_name, verified_number, status, aff_code, referrer_type, referrer_id, personal_free_base, enterprise_free_base, last_login_at, created_at, updated_at`
+const userColumns = `id, phone, username, password_hash, balance, realname_status, verified_name, verified_number, status, aff_code, referrer_type, referrer_id, personal_free_base, enterprise_free_base, last_login_at, created_at, updated_at, wechat_unionid, wechat_mp_openid, wechat_open_openid, wechat_nickname`
 
 // scanUser 将查询结果扫描到 User（证件号存储加密，读取时解密）
 func scanUser(row interface{ Scan(...interface{}) error }) (*model.User, error) {
@@ -77,6 +80,10 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*model.User, error) 
 		&user.LastLoginAt,
 		&user.CreatedAt,
 		&user.UpdatedAt,
+		&user.WechatUnionID,
+		&user.WechatMPOpenID,
+		&user.WechatOpenOpenID,
+		&user.WechatNickname,
 	)
 	if err != nil {
 		return nil, err
@@ -430,5 +437,80 @@ func (r *UserRepository) GetAllUsers(page, pageSize int, keyword string, realnam
 func (r *UserRepository) UpdateUserStatus(userID int64, status int) error {
 	query := `UPDATE ` + model.SysDB + `.user SET status = ?, updated_at = ? WHERE id = ?`
 	_, err := r.db.Exec(query, status, time.Now(), userID)
+	return err
+}
+
+// GetUserByWechat 按微信标识查询已绑定用户：任一标识命中即返回（unionid 命中优先）。
+// 三个入参可传空串（对应端未取得该标识），空串不参与匹配；均未命中返回 ErrUserNotFound。
+func (r *UserRepository) GetUserByWechat(unionID, mpOpenID, openOpenID string) (*model.User, error) {
+	query := `SELECT ` + userColumns + ` FROM ` + model.SysDB + `.user
+		WHERE (wechat_unionid IS NOT NULL AND wechat_unionid = ?)
+		   OR (wechat_mp_openid IS NOT NULL AND wechat_mp_openid = ?)
+		   OR (wechat_open_openid IS NOT NULL AND wechat_open_openid = ?)
+		ORDER BY (wechat_unionid IS NOT NULL AND wechat_unionid = ?) DESC, id ASC
+		LIMIT 1`
+
+	user, err := scanUser(r.db.QueryRow(query, unionID, mpOpenID, openOpenID, unionID))
+	if err == sql.ErrNoRows {
+		return nil, ErrUserNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+// BindWechatMP 绑定公众号网页授权 openid（手机端一键登录）。
+// unionid / nickname 为空时不覆盖已有值（同一开放平台账号下可能已由扫码端写入 unionid）。
+func (r *UserRepository) BindWechatMP(userID int64, openID, unionID, nickname string) error {
+	query := `UPDATE ` + model.SysDB + `.user
+		SET wechat_mp_openid = ?, wechat_unionid = COALESCE(NULLIF(?, ''), wechat_unionid),
+			wechat_nickname = COALESCE(NULLIF(?, ''), wechat_nickname), updated_at = ?
+		WHERE id = ?`
+	return wrapWechatBindErr(r.db.Exec(query, openID, unionID, nickname, time.Now(), userID))
+}
+
+// BindWechatOpen 绑定开放平台网站应用 openid（PC 扫码登录）
+func (r *UserRepository) BindWechatOpen(userID int64, openID, unionID, nickname string) error {
+	query := `UPDATE ` + model.SysDB + `.user
+		SET wechat_open_openid = ?, wechat_unionid = COALESCE(NULLIF(?, ''), wechat_unionid),
+			wechat_nickname = COALESCE(NULLIF(?, ''), wechat_nickname), updated_at = ?
+		WHERE id = ?`
+	return wrapWechatBindErr(r.db.Exec(query, openID, unionID, nickname, time.Now(), userID))
+}
+
+// UnbindWechatMP 解绑公众号 openid（必须写 NULL：空串会被唯一索引判为冲突）
+func (r *UserRepository) UnbindWechatMP(userID int64) error {
+	query := `UPDATE ` + model.SysDB + `.user SET wechat_mp_openid = NULL, updated_at = ? WHERE id = ?`
+	_, err := r.db.Exec(query, time.Now(), userID)
+	return err
+}
+
+// UnbindWechatOpen 解绑开放平台 openid（必须写 NULL：空串会被唯一索引判为冲突）
+func (r *UserRepository) UnbindWechatOpen(userID int64) error {
+	query := `UPDATE ` + model.SysDB + `.user SET wechat_open_openid = NULL, updated_at = ? WHERE id = ?`
+	_, err := r.db.Exec(query, time.Now(), userID)
+	return err
+}
+
+// GetWechatBinding 查询用户的微信绑定标识（未绑定的返回空串）
+func (r *UserRepository) GetWechatBinding(userID int64) (unionID, mpOpenID, openOpenID, nickname string, err error) {
+	var u, m, o, n sql.NullString
+	err = r.db.QueryRow(`SELECT wechat_unionid, wechat_mp_openid, wechat_open_openid, wechat_nickname
+		FROM `+model.SysDB+`.user WHERE id = ?`, userID).Scan(&u, &m, &o, &n)
+	if err == sql.ErrNoRows {
+		return "", "", "", "", ErrUserNotFound
+	}
+	if err != nil {
+		return "", "", "", "", err
+	}
+	return u.String, m.String, o.String, n.String, nil
+}
+
+// wrapWechatBindErr 把唯一索引冲突（Duplicate entry）转为 ErrWechatAlreadyBound
+func wrapWechatBindErr(_ sql.Result, err error) error {
+	if err != nil && strings.Contains(err.Error(), "Duplicate entry") {
+		return ErrWechatAlreadyBound
+	}
 	return err
 }
