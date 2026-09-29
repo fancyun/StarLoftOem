@@ -1,10 +1,8 @@
 import { computed, reactive } from 'vue'
 
-// 平台展示名与站点域名（白标已移除：站点一律为平台自有域名，不再按访问域名解析）
-export const PLATFORM_NAME = '星楼网络'
-export const PLATFORM_SUB_NAME = 'StarLoft'
+import { brandState, siteBase as brandSiteBase } from './brand'
 
-/** 站点域名组（恒为平台默认站点） */
+/** 站点域名组 */
 export interface PromotionSites {
   portal: string
   console: string
@@ -21,37 +19,42 @@ export interface ResolvedPromotion {
   unit_prices: Record<string, number>
 }
 
-const PLATFORM_SITES: PromotionSites = {
-  portal: 'https://www.starloft.cn',
-  console: 'https://console.starloft.cn',
-  api: 'https://api.starloft.cn',
-  img: 'https://img.starloft.cn',
-  service: 'https://service.starloft.cn'
-}
-
-// 站点品牌与域名状态：白标已移除，恒为平台直营（保留响应式状态以兼容既有引用）
+// 品牌与站点域名：由后端公开配置下发（后台「系统设置 → 品牌与域名」维护），未取到时回落默认值。
+// 保留响应式状态以兼容既有引用（siteState）。
 export const siteState = reactive<{ matched: boolean; name: string; sites: PromotionSites }>({
   matched: false,
   name: '',
-  sites: { ...PLATFORM_SITES }
+  sites: { ...brandState.sites }
 })
 
-/** 站点展示品牌名：恒为平台品牌 */
-export const siteName = computed<string>(() => PLATFORM_NAME)
+/** 品牌配置加载后同步到 siteState（由应用入口在 loadBrand 完成后调用） */
+export function syncBrandToSiteState() {
+  siteState.name = brandState.name
+  siteState.sites = { ...brandState.sites }
+}
 
-/** 站点英文副品牌：恒为平台副品牌 */
-export const siteSubName = computed<string>(() => PLATFORM_SUB_NAME)
+/** 平台展示名 */
+export const PLATFORM_NAME = computed<string>(() => brandState.name)
+
+/** 平台副品牌/副标题 */
+export const PLATFORM_SUB_NAME = computed<string>(() => brandState.sub_name)
+
+/** 站点展示品牌名 */
+export const siteName = computed<string>(() => brandState.name)
+
+/** 站点副品牌/副标题 */
+export const siteSubName = computed<string>(() => brandState.sub_name)
 
 /** 取站点基地址（不含末尾斜杠），如 siteBase('console') → https://console.starloft.cn */
-export const siteBase = (kind: keyof PromotionSites): string => siteState.sites[kind].replace(/\/$/, '')
+export const siteBase = (kind: keyof PromotionSites): string => brandSiteBase(kind)
 
 /** 来源域名：白标已移除，恒为空串 */
 export function promotionSourceDomain(): string {
   return ''
 }
 
-// 标签页标题：平台态固定为「星楼网络控制台」
-document.title = `${PLATFORM_NAME}控制台`
+// 标签页标题：品牌名 + 控制台（品牌配置加载后由 main.ts 再次刷新）
+document.title = `${PLATFORM_NAME.value}控制台`
 
 /** 站点归属解析：白标已移除，恒按平台直营返回空结果 */
 export function resolvePromotion(): Promise<ResolvedPromotion | null> {

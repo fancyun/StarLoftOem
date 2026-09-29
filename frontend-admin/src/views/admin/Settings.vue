@@ -89,10 +89,11 @@ const saving = ref(false)
 const dialogVisible = ref(false)
 const settings = ref<SettingItem[]>([])
 
-const categoryOrder = ['finauth', 'tencent', 'alipay', 'wechat', 'sms', 'kyc', 'payment', 'aff', 'contact', 'security', 'common']
+const categoryOrder = ['starloft', 'brand', 'tencent', 'alipay', 'wechat', 'sms', 'kyc', 'payment', 'aff', 'contact', 'security', 'common']
 
 const categoryLabels: Record<string, string> = {
-  finauth: '实名核验',
+  starloft: '上游平台（StarLoft）',
+  brand: '品牌与域名',
   tencent: '腾讯云',
   alipay: '支付宝',
   wechat: '微信支付',

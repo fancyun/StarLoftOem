@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"oemrpa/internal/model"
+	"oemrpa/internal/site"
 )
 
 type Config struct {
@@ -52,6 +53,8 @@ type Config struct {
 	AliyunAccessKeyID     string
 	AliyunAccessKeySecret string
 	AliyunMarketAppCode   string
+	// 阿里云云市场「企业工商四要素核验」接口地址（订阅商品后获得，存系统库 setting）
+	AliyunEnterpriseVerifyURL string
 	TencentRegion              string   // 腾讯云服务地域（如 ap-guangzhou）
 	UploadDir                  string   // 用户上传文件目录（营业执照/身份证等图片）
 	MediaDir                   string   // 人脸核验认证媒体目录（照片/视频，容器内 /app/media，bind mount 宿主 ./data/media）
@@ -65,6 +68,20 @@ type Config struct {
 	CallbackTrustIPs           []string // 上游回调信任 IP（联麓/FinAuth/支付宝/微信推送来源，支持精确 IP 与 CIDR，英文逗号分隔；未配置时放行）
 	// 客服联系方式（存系统库 setting 分组 contact，后台「系统设置」维护；门户首页每次加载实时读取展示）
 	Contact ContactConfig
+	// 品牌信息（存系统库 setting 分组 brand，后台「系统设置」维护；各前端启动时经 /console/config 读取展示）
+	Brand BrandConfig
+}
+
+// BrandConfig 品牌与域名（前端展示内容 + 站点主域，全部可在后台在线维护）
+type BrandConfig struct {
+	Name       string // 平台名称
+	SubName    string // 平台副标题/简称
+	ICP        string // ICP 备案号（页脚展示）
+	Company    string // 公司主体
+	Address    string // 公司地址（页脚展示）
+	Copyright  string // 版权文案（页脚展示）
+	LogoURL    string // Logo 图片地址（留空时前端展示文字品牌名）
+	RootDomain string // 站点主域：各站点域名与对外地址由此拼装（www./console./api./img./service.）
 }
 
 // ContactConfig 客服联系方式（门户首页页脚展示，可留空表示不展示该项）
@@ -320,6 +337,15 @@ func loadFromEnv(cfg *Config) {
 	cfg.Contact.Wechat = ""
 	cfg.Contact.QQ = ""
 	cfg.Contact.Hours = "周一至周日 8:00 - 24:00"
+	// 品牌与域名默认值（后台可在线改；站点主域用于拼装各站点域名与对外回调地址）
+	cfg.Brand.Name = "OEM 云服务"
+	cfg.Brand.SubName = ""
+	cfg.Brand.ICP = ""
+	cfg.Brand.Company = "OEM 网络科技有限公司"
+	cfg.Brand.Address = ""
+	cfg.Brand.Copyright = "© OEM 云服务"
+	cfg.Brand.LogoURL = ""
+	cfg.Brand.RootDomain = site.RootDomain
 	// 各产品成本单价（FV_AUTH_COST / FV_SELF_COST / SMS_COST）默认 0（无成本），仅在后台产品配置中维护；
 	// 支付日限额（PAYMENT_DAILY_LIMIT）默认 0（不限），仅在后台系统设置中维护。
 

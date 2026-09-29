@@ -56,6 +56,19 @@ func ApplySettingOverrides(cfg *Config, sys, fv, sms map[string]string) {
 	applyString(&cfg.GeetestCaptchaID, sys, SettingKeyGeetestCaptchaID)
 	applyString(&cfg.AliyunCaptchaSceneID, sys, SettingKeyAliyunCaptchaSceneID)
 
+	// 阿里云企业工商四要素核验接口地址（云市场商品订阅地址）
+	applyString(&cfg.AliyunEnterpriseVerifyURL, sys, SettingKeyAliyunEnterpriseVerifyURL)
+
+	// 品牌与域名（前端展示内容 + 站点主域）
+	applyString(&cfg.Brand.Name, sys, SettingKeyBrandName)
+	applyString(&cfg.Brand.SubName, sys, SettingKeyBrandSubName)
+	applyString(&cfg.Brand.ICP, sys, SettingKeyBrandICP)
+	applyString(&cfg.Brand.Company, sys, SettingKeyBrandCompany)
+	applyString(&cfg.Brand.Address, sys, SettingKeyBrandAddress)
+	applyString(&cfg.Brand.Copyright, sys, SettingKeyBrandCopyright)
+	applyString(&cfg.Brand.LogoURL, sys, SettingKeyBrandLogoURL)
+	applyString(&cfg.Brand.RootDomain, sys, SettingKeyBrandRootDomain)
+
 	// 支付宝支付（PEM 证书走 certs/ 目录文件，不入配置表）
 	applyInt(&cfg.Alipay.Enabled, sys, "ALIPAY_ENABLED")
 	applyString(&cfg.Alipay.AppID, sys, "ALIPAY_APP_ID")
@@ -105,6 +118,17 @@ const (
 	SettingKeyCaptchaProvider       = "CAPTCHA_PROVIDER"
 	SettingKeyGeetestCaptchaID      = "GEETEST_CAPTCHA_ID"
 	SettingKeyAliyunCaptchaSceneID  = "ALIYUN_CAPTCHA_SCENE_ID"
+	// 阿里云云市场「企业工商四要素核验」接口地址（AppCode 见 .env 的 ALIYUN_MARKET_APPCODE）
+	SettingKeyAliyunEnterpriseVerifyURL = "ALIYUN_ENTERPRISE_VERIFY_URL"
+	// 品牌与域名（前端展示内容 + 站点主域，后台「系统设置 → 品牌与域名」维护）
+	SettingKeyBrandName       = "BRAND_NAME"
+	SettingKeyBrandSubName    = "BRAND_SUB_NAME"
+	SettingKeyBrandICP        = "BRAND_ICP"
+	SettingKeyBrandCompany    = "BRAND_COMPANY"
+	SettingKeyBrandAddress    = "BRAND_ADDRESS"
+	SettingKeyBrandCopyright  = "BRAND_COPYRIGHT"
+	SettingKeyBrandLogoURL    = "BRAND_LOGO_URL"
+	SettingKeyBrandRootDomain = "BRAND_ROOT_DOMAIN"
 
 	SettingKeyKycPersonalPrice   = "KYC_PERSONAL_PRICE"
 	SettingKeyKycEnterprisePrice = "KYC_ENTERPRISE_PRICE"
@@ -154,6 +178,17 @@ func SettingCatalog() []SettingSpec {
 		{SettingKeyCaptchaProvider, model.SettingCategoryCommon, "人机验证码通道：tencent-腾讯天御（默认）/ geetest-极验 / aliyun-阿里云行为验证码"},
 		{SettingKeyGeetestCaptchaID, model.SettingCategoryCommon, "极验 CaptchaId（provider=geetest 时必填；密钥见 .env 的 GEETEST_CAPTCHA_KEY）"},
 		{SettingKeyAliyunCaptchaSceneID, model.SettingCategoryCommon, "阿里云验证码场景 ID（provider=aliyun 时必填；账号密钥见 .env 的 ALIYUN_ACCESS_KEY_ID/SECRET）"},
+		{SettingKeyAliyunEnterpriseVerifyURL, model.SettingCategoryCommon, "阿里云云市场「企业工商四要素核验」接口地址（企业四要素 provider=aliyun 时必填；AppCode 见 .env 的 ALIYUN_MARKET_APPCODE）"},
+
+		// 品牌与域名（前端展示内容 + 站点主域；改完需重启后端使站点主域生效，展示文案由前端实时读取）
+		{SettingKeyBrandName, model.SettingCategoryBrand, "平台名称（各前端标题与页头展示）"},
+		{SettingKeyBrandSubName, model.SettingCategoryBrand, "平台副标题/简称"},
+		{SettingKeyBrandICP, model.SettingCategoryBrand, "ICP 备案号（页脚展示，留空表示不展示）"},
+		{SettingKeyBrandCompany, model.SettingCategoryBrand, "公司主体（页脚与协议页展示）"},
+		{SettingKeyBrandAddress, model.SettingCategoryBrand, "公司地址（页脚展示，留空表示不展示）"},
+		{SettingKeyBrandCopyright, model.SettingCategoryBrand, "版权文案（页脚展示）"},
+		{SettingKeyBrandLogoURL, model.SettingCategoryBrand, "Logo 图片地址（留空时展示文字品牌名）"},
+		{SettingKeyBrandRootDomain, model.SettingCategoryBrand, "站点主域（如 example.com）：www./console./api./img./service. 各站点域名与对外回调地址由此拼装，改完需重启后端"},
 
 		// 支付宝支付（APP_ID 为标识；PEM 证书见 certs/ 目录，均不纳入配置表）
 		{"ALIPAY_ENABLED", model.SettingCategoryAlipay, "启用开关：1-启用 2-不启用"},
@@ -201,6 +236,15 @@ func (cfg *Config) SettingValues() map[string]string {
 		SettingKeyCaptchaProvider:             cfg.CaptchaProvider,
 		SettingKeyGeetestCaptchaID:            cfg.GeetestCaptchaID,
 		SettingKeyAliyunCaptchaSceneID:        cfg.AliyunCaptchaSceneID,
+		SettingKeyAliyunEnterpriseVerifyURL:   cfg.AliyunEnterpriseVerifyURL,
+		SettingKeyBrandName:                   cfg.Brand.Name,
+		SettingKeyBrandSubName:                cfg.Brand.SubName,
+		SettingKeyBrandICP:                    cfg.Brand.ICP,
+		SettingKeyBrandCompany:                cfg.Brand.Company,
+		SettingKeyBrandAddress:                cfg.Brand.Address,
+		SettingKeyBrandCopyright:              cfg.Brand.Copyright,
+		SettingKeyBrandLogoURL:                cfg.Brand.LogoURL,
+		SettingKeyBrandRootDomain:             cfg.Brand.RootDomain,
 		"ALIPAY_ENABLED":                          strconv.Itoa(cfg.Alipay.Enabled),
 		"ALIPAY_APP_ID":                           cfg.Alipay.AppID,
 		"WECHAT_ENABLED":                          strconv.Itoa(cfg.WechatPay.Enabled),

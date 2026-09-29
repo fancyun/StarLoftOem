@@ -154,6 +154,7 @@ import { userAPI } from '@/api'
 import { useUserStore } from '@/stores/user'
 import { verifyCaptcha } from '@/utils/captcha'
 import { resolvePromotion, promotionSourceDomain, siteBase, siteState } from '@/utils/promotion'
+import { brandState } from '@/utils/brand'
 
 const router = useRouter()
 const route = useRoute()
@@ -166,9 +167,9 @@ const formRef = ref()
 const promotionDomain = ref(promotionSourceDomain())
 const promotionName = ref('')
 const affRef = ref(String(route.query.ref || '').trim())
-// 品牌区标题/副标题：命中推广品牌时用其品牌名并隐藏平台副品牌
-const brandTitle = computed(() => (siteState.matched && siteState.name ? siteState.name : 'StarLoft'))
-const brandSub = computed(() => (siteState.matched ? '' : 'Cloud Services'))
+// 品牌区标题/副标题：均取自后端下发的品牌配置（后台「系统设置 → 品牌与域名」维护）
+const brandTitle = computed(() => siteState.name || brandState.name)
+const brandSub = computed(() => brandState.sub_name)
 
 const form = reactive({
   username: '',

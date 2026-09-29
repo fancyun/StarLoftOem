@@ -115,8 +115,8 @@
 
           <div class="footer-col">
             <div class="footer-title">公司信息</div>
-            <span class="footer-link">上海星楼网络科技有限公司</span>
-            <span class="footer-link">上海市崇明区东平镇东冉路547号</span>
+            <span class="footer-link">{{ brandState.company }}</span>
+            <span class="footer-link" v-if="brandState.address">{{ brandState.address }}</span>
           </div>
 
           <div class="footer-col">
@@ -128,7 +128,7 @@
         </div>
         <div class="footer-bottom">
           <span>{{ copyrightText }}</span>
-          <a class="icp-link" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">沪ICP备2026043262号</a>
+          <a class="icp-link" v-if="brandState.icp" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">{{ brandState.icp }}</a>
           <router-link to="/terms" class="icp-link">用户协议</router-link>
           <router-link to="/privacy" class="icp-link">隐私政策</router-link>
           <router-link to="/auth-authorization" class="icp-link">实名认证授权</router-link>
@@ -147,6 +147,7 @@ import { useRoute } from 'vue-router'
 import { products } from '@/config/products'
 import type { Product } from '@/config/products'
 import { loginUrl, registerUrl, siteBase, siteName, siteSubName } from '@/utils/promotion'
+import { brandState } from '@/utils/brand'
 
 const route = useRoute()
 

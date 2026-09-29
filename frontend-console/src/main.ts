@@ -6,6 +6,8 @@ import '@/assets/main.css'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import App from './App.vue'
 import router from './router'
+import { applyTitle, loadBrand } from '@/utils/brand'
+import { syncBrandToSiteState } from '@/utils/promotion'
 
 // 全局报错弹窗去重：请求拦截器已统一弹出业务错误，页面 catch 又会再弹一次，
 // 导致一次操作出现 2~3 个重复报错。此处对相同错误消息做 1.5s 去重，仅保留一个。
@@ -38,3 +40,9 @@ app.use(router)
 app.use(ElementPlus)
 
 app.mount('#app')
+
+// 品牌由后端公开配置下发：加载完成后同步到站点状态并刷新标签标题（取不到时用默认品牌名）
+loadBrand().then(() => {
+  syncBrandToSiteState()
+  applyTitle('控制台')
+})

@@ -76,25 +76,17 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { brandState, loadBrand, loadPublicConfig, siteBase as brandSiteBase } from '@/utils/brand'
 
 /*
- * 站点品牌与站点域名：白标已移除，一律展示平台品牌与平台站点域名
+ * 站点品牌与站点域名：由后端公开配置下发（后台「系统设置 → 品牌与域名」维护），未取到时回落默认值
  */
-const PLATFORM_NAME = '星楼网络'
-const PLATFORM_SITES = {
-  portal: 'https://www.starloft.cn',
-  console: 'https://console.starloft.cn',
-  api: 'https://api.starloft.cn',
-  img: 'https://img.starloft.cn',
-  service: 'https://service.starloft.cn'
-}
-
-const brandName = PLATFORM_NAME
+const brandName = computed(() => brandState.name)
 
 /** 取站点基地址（不含末尾斜杠） */
-const siteBase = (kind: keyof typeof PLATFORM_SITES): string => PLATFORM_SITES[kind].replace(/\/$/, '')
+const siteBase = (kind: keyof typeof brandState.sites): string => brandSiteBase(kind)
 
-document.title = `${brandName} · 人脸核验`
+document.title = `${brandState.name} · 人脸核验`
 
 /*
  * FV 认证承接页（自站链接 {service 站点}/fv/:mode）
@@ -142,16 +134,13 @@ const upstreamUrl = computed(() => {
   return `${upstreamBase.value}/${runMode.value}?token=${encodeURIComponent(token.value)}`
 })
 
-// 拉取公开配置，取得上游核身承接页基址
+// 拉取公开配置：取得上游核身承接页基址与品牌信息（品牌用于页面标题与页脚展示）
 onMounted(async () => {
-  try {
-    const res = await fetch('/console/config')
-    const json = await res.json()
-    const base = json?.data?.fv_upstream_base
-    if (typeof base === 'string' && base) upstreamBase.value = base
-  } catch {
-    // 取不到配置时保持空串，由页面提示核身通道不可用
-  }
+  const json = await loadPublicConfig()
+  const base = json?.data?.fv_upstream_base
+  if (typeof base === 'string' && base) upstreamBase.value = base
+  await loadBrand()
+  document.title = `${brandState.name} · 人脸核验`
 })
 
 /** 是否移动端（UA 判断） */

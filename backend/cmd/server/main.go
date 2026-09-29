@@ -9,6 +9,7 @@ import (
 	"oemrpa/internal/redis"
 	"oemrpa/internal/repository"
 	"oemrpa/internal/router"
+	"oemrpa/internal/site"
 	"oemrpa/internal/upstream"
 	"oemrpa/internal/utils"
 )
@@ -102,6 +103,10 @@ func main() {
 	if err := applyDBConfig(cfg); err != nil {
 		log.Printf("加载数据库配置失败，沿用内置默认值: %v", err)
 	}
+
+	// 站点主域：由后台配置注入（未配置时沿用代码内置默认值）。
+	// 各站点域名与对外回调/跳转地址均据此拼装，改主域后需重启后端生效。
+	site.SetRootDomain(cfg.Brand.RootDomain)
 
 	// 初始化 Redis
 	if err := redis.Init(&cfg.Redis); err != nil {

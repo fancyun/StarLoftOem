@@ -71,11 +71,16 @@ func New(cfg *config.Config) (*Runtime, error) {
 		s.faceProvider = s.starLoft
 	}
 
-	// 企业工商四要素核验 provider：默认腾讯云 OCR；配置为 aliyun 时由阿里云提供（未配置时不可用）
-	if cfg.EnterpriseVerifyProvider != config.EnterpriseVerifyProviderTencent {
-		log.Printf("企业四要素核验 provider=%s 尚未配置，企业实名自助核验不可用", cfg.EnterpriseVerifyProvider)
-	} else if ocr := newTencentOcr(cfg); ocr != nil {
-		s.enterpriseVerifier = upstream.NewTencentOcrVerifier(ocr)
+	// 企业工商四要素核验 provider：默认腾讯云 OCR；配置为 aliyun 时走阿里云云市场（凭据缺失时不可用）
+	if cfg.EnterpriseVerifyProvider == config.EnterpriseVerifyProviderTencent {
+		if ocr := newTencentOcr(cfg); ocr != nil {
+			s.enterpriseVerifier = upstream.NewTencentOcrVerifier(ocr)
+		}
+	} else {
+		s.enterpriseVerifier = upstream.NewAliyunEnterpriseVerifier(cfg.AliyunEnterpriseVerifyURL, cfg.AliyunMarketAppCode)
+		if cfg.AliyunEnterpriseVerifyURL == "" || cfg.AliyunMarketAppCode == "" {
+			log.Print("企业四要素核验 provider=aliyun，但接口地址或 AppCode 缺失，企业实名自助核验不可用")
+		}
 	}
 
 	// 人机验证码：按后台配置选择通道（天御 / 极验 / 阿里云）

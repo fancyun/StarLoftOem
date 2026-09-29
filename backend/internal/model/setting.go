@@ -10,6 +10,7 @@ func (Setting) TableName() string { return SysDB + ".setting" }
 // 配置分组
 const (
 	SettingCategoryStarLoft = "starloft" // 上游 StarLoft 平台（唯一上游：短信/人脸核验/系统验证码短信/账户实名）
+	SettingCategoryBrand    = "brand"    // 品牌与域名（前端展示内容与站点主域）
 	SettingCategoryTencent  = "tencent"  // 腾讯云账号密钥（验证码/人脸核身/OCR）
 	SettingCategoryAlipay   = "alipay"   // 支付宝支付
 	SettingCategoryWechat   = "wechat"   // 微信支付

@@ -162,6 +162,17 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
+    # 公开配置（品牌/客服联系方式/支付渠道）：门户需读取后端公开配置，同样反代到后端
+    resolver 127.0.0.11 valid=30s;
+    set $backend_endpoint backend:8080;
+    location ^~ /console/config {
+        proxy_pass http://$backend_endpoint;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $forwarded_proto;
+    }
+
     # API 仅由 api.oem.example.com 承载，本站点拒绝 /api 访问
     location /api/ { return 404; }
     location = /api { return 404; }
@@ -235,6 +246,15 @@ server {
     # proxy_pass 含变量时不拼接 URI，故先 rewrite 再透传，避免路径截断。
     location /service/ {
         rewrite ^/service/(.*)$ /service/$1 break;
+        proxy_pass http://$backend_endpoint;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $forwarded_proto;
+    }
+
+    # 公开配置（品牌/上游核身基址）：承接页需读取后端公开配置，同样反代到后端
+    location ^~ /console/config {
         proxy_pass http://$backend_endpoint;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

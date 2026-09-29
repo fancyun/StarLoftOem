@@ -12,6 +12,7 @@ import (
 	"oemrpa/internal/model"
 	"oemrpa/internal/repository"
 	"oemrpa/internal/runtime"
+	"oemrpa/internal/site"
 )
 
 type PublicHandler struct {
@@ -19,6 +20,8 @@ type PublicHandler struct {
 	settingRepo *repository.SettingRepository
 	// contactDef 启动时生效的客服联系方式（数据库配置或代码内置默认值），用于配置表无值时的兜底
 	contactDef config.ContactConfig
+	// brandDef 启动时生效的品牌信息（数据库配置或代码内置默认值），用于配置表无值时的兜底
+	brandDef config.BrandConfig
 }
 
 func NewPublicHandler(rt *runtime.Runtime, settingRepo *repository.SettingRepository, cfg *config.Config) *PublicHandler {
@@ -26,6 +29,7 @@ func NewPublicHandler(rt *runtime.Runtime, settingRepo *repository.SettingReposi
 		rt:          rt,
 		settingRepo: settingRepo,
 		contactDef:  cfg.Contact,
+		brandDef:    cfg.Brand,
 	}
 }
 
@@ -50,6 +54,7 @@ func (h *PublicHandler) GetPublicConfig(c *gin.Context) {
 			"fv_upstream_base": h.rt.UpstreamFvBase(), // 上游平台人脸核验承接页基址（承接页据此拼接 /auth|/self 跳转）
 			"payment_channels": channels,              // 已启用的在线支付渠道
 			"contact":          h.contact(),           // 客服联系方式（门户首页展示）
+			"brand":            h.brand(),             // 品牌与站点域名（各前端展示内容）
 		},
 	})
 }
@@ -74,6 +79,39 @@ func (h *PublicHandler) contact() gin.H {
 		"wechat": pick(config.SettingKeyContactWechat, h.contactDef.Wechat),
 		"qq":     pick(config.SettingKeyContactQQ, h.contactDef.QQ),
 		"hours":  pick(config.SettingKeyContactHours, h.contactDef.Hours),
+	}
+}
+
+// brand 品牌与站点域名：实时读取系统库配置表（后台「系统设置 → 品牌与域名」维护），
+// 各前端启动时经本接口读取展示内容与站点基地址；配置行存在即以其值为准（留空表示该项不展示），
+// 配置行不存在或读取失败时回落启动时生效值。站点域名由 site 包按主域拼装。
+func (h *PublicHandler) brand() gin.H {
+	kv, err := h.settingRepo.AllSettings()
+	if err != nil {
+		kv = nil
+	}
+	pick := func(key, def string) string {
+		if v, ok := kv[key]; ok {
+			return strings.TrimSpace(v)
+		}
+		return def
+	}
+	hosts := site.Platform()
+	return gin.H{
+		"name":      pick(config.SettingKeyBrandName, h.brandDef.Name),
+		"sub_name":  pick(config.SettingKeyBrandSubName, h.brandDef.SubName),
+		"icp":       pick(config.SettingKeyBrandICP, h.brandDef.ICP),
+		"company":   pick(config.SettingKeyBrandCompany, h.brandDef.Company),
+		"address":   pick(config.SettingKeyBrandAddress, h.brandDef.Address),
+		"copyright": pick(config.SettingKeyBrandCopyright, h.brandDef.Copyright),
+		"logo_url":  pick(config.SettingKeyBrandLogoURL, h.brandDef.LogoURL),
+		"sites": gin.H{
+			"portal":  hosts.PortalBase(),
+			"console": hosts.ConsoleBase(),
+			"api":     hosts.APIBase(),
+			"img":     hosts.ImgBase(),
+			"service": hosts.ServiceBase(),
+		},
 	}
 }
 
