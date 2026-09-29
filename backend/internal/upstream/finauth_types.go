@@ -30,12 +30,9 @@ func (f *FlexInt) UnmarshalJSON(data []byte) error {
 // 文档: https://www.yljz.com/document/finauth-guide-docs/h5_plus_get_token
 type GetTokenRequest struct {
 	// 必选参数
-	Sign           string // HMAC 签名
-	SignVersion    string // 签名算法版本: hmac_sha1 / hmac_sha256
 	ReturnURL      string // 验证完成后跳转URL
 	NotifyURL      string // 回调URL
 	BizNo          string // 客户业务流水号，唯一，不超过128字节
-	SceneID        string // 场景ID
 	ComparisonType string // "1"=人脸核验模式
 	UUID           string // 用户唯一标识，不超过512字节
 
@@ -47,6 +44,9 @@ type GetTokenRequest struct {
 	// 可选参数
 	BizExtraData   string // 额外数据，不超过4096字节
 	EncryptionType string // 加密类型: 0/1/2
+
+	// Product 发起的具体服务（fv_auth 有源 / fv_self 无源）：上游按此选择对应端点，非上游参数
+	Product string
 }
 
 // GetTokenResponse get_token 响应
@@ -62,9 +62,7 @@ type GetTokenResponse struct {
 // GetResultRequest get_result 请求参数（GET 请求，Query 参数）
 // 文档: https://www.yljz.com/document/finauth-guide-docs/h5_plus_get_result
 type GetResultRequest struct {
-	BizID       string // 业务流串号，必选
-	Sign        string // HMAC 签名，必选
-	SignVersion string // 签名算法版本，必选
+	BizID string // 业务流串号，必选
 }
 
 // GetResultResponse get_result 响应

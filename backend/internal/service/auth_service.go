@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"oemrpa/internal/audit"
-	"oemrpa/internal/config"
 	"oemrpa/internal/logstore"
 	"oemrpa/internal/model"
 	"oemrpa/internal/repository"
@@ -62,14 +61,12 @@ func generateRecordBizNo(userID int64) string {
 
 // AuthService 认证服务
 type AuthService struct {
-	// finAuthClient / finAuthCfg 为取器闭包，从运行时快照获取当前生效的 FinAuth 客户端与配置，
-	// 业务配置在后台修改后无需重启即对后续认证生效。
-	finAuthClient func() upstream.FinAuthInterface
-	finAuthCfg    func() config.FinAuthConfig
-	// platformFaceId 平台自用腾讯云人脸核身客户端（企业实名法人扫脸）
-	platformFaceId *upstream.TencentFaceIdClient
-	// platformOcr 平台自用腾讯云 OCR 客户端（企业实名营业执照四要素核验）
-	platformOcr        *upstream.TencentOcrClient
+	// finAuth 人脸核验（FV）产品上游（StarLoft 平台开放 API）
+	finAuth upstream.FinAuthInterface
+	// faceProvider 账户实名人脸核身 provider（上游 StarLoft 平台 / 腾讯云可切换）
+	faceProvider upstream.FaceProvider
+	// enterpriseVerifier 企业工商四要素核验 provider（腾讯云 OCR / 阿里云可切换）
+	enterpriseVerifier upstream.EnterpriseVerifier
 	recordRepo         *repository.AuthRecordRepository // 人脸核验订单库（oem_fv）
 	userRepo           *repository.UserRepository
 	apiKeyRepo         *repository.ApiKeyRepository
@@ -109,10 +106,9 @@ func (s *AuthService) hostsFor(userID int64) site.Hosts {
 
 // NewAuthService 创建认证服务
 func NewAuthService(
-	finAuthClient func() upstream.FinAuthInterface,
-	finAuthCfg func() config.FinAuthConfig,
-	platformFaceId *upstream.TencentFaceIdClient,
-	platformOcr *upstream.TencentOcrClient,
+	finAuth upstream.FinAuthInterface,
+	faceProvider upstream.FaceProvider,
+	enterpriseVerifier upstream.EnterpriseVerifier,
 	recordRepo *repository.AuthRecordRepository,
 	userRepo *repository.UserRepository,
 	apiKeyRepo *repository.ApiKeyRepository,
@@ -128,10 +124,9 @@ func NewAuthService(
 	kycEnterprisePrice float64,
 ) *AuthService {
 	return &AuthService{
-		finAuthClient:      finAuthClient,
-		finAuthCfg:         finAuthCfg,
-		platformFaceId:     platformFaceId,
-		platformOcr:        platformOcr,
+		finAuth:            finAuth,
+		faceProvider:       faceProvider,
+		enterpriseVerifier: enterpriseVerifier,
 		recordRepo:         recordRepo,
 		userRepo:           userRepo,
 		apiKeyRepo:         apiKeyRepo,
@@ -261,7 +256,7 @@ func (s *AuthService) startAccountAuth(
 	userID int64,
 	name, idCard, returnURL, notifyURL, bizExtraData string,
 ) (*StartAuthResult, error) {
-	if s.platformFaceId == nil {
+	if s.faceProvider == nil {
 		return nil, errors.New("人脸核身服务未配置")
 	}
 
@@ -301,7 +296,7 @@ func (s *AuthService) startAccountAuth(
 	}
 
 	// 发起腾讯云人脸核身（姓名 + 身份证号核验 + 活体检测），返回 H5 核身地址
-	detect, err := s.platformFaceId.DetectAuth(name, idCard, s.hostsFor(userID).ConsoleBase()+"/certification", bizNo)
+	detect, err := s.faceProvider.StartAuth(name, idCard, s.hostsFor(userID).ConsoleBase()+"/certification", bizNo)
 	if err != nil {
 		log.Printf("获取腾讯云人脸核身 Token 失败: %v", err)
 		// 已扣费则原路退还（免费次数内不计费），并将实名记录标记为失败（连接超时）
@@ -313,7 +308,7 @@ func (s *AuthService) startAccountAuth(
 	}
 
 	// 写入记录上游信息（BizToken 供后续查询核身结果）
-	if err := s.kycRecordRepo.UpdateUpstreamInfo(kycRecord.ID, detect.BizToken, "", detect.BizToken); err != nil {
+	if err := s.kycRecordRepo.UpdateUpstreamInfo(kycRecord.ID, detect.Token, "", detect.Token); err != nil {
 		log.Printf("更新实名记录上游信息失败 [record_id=%d]: %v", kycRecord.ID, err)
 		// 已扣费则原路退还（与 DetectAuth 失败分支一致，避免用户白扣费）
 		s.refundKycCharge(userID, payType, packID, s.platformScopedPrice(userID, model.ServiceKYCPersonal, s.getKycPersonalPrice()), kycRecord.ID, "kyc")
@@ -322,14 +317,14 @@ func (s *AuthService) startAccountAuth(
 		audit.KycRecord("kyc_start_failed", "console", kycRecord, audit.KV("reason", "写入 token 失败"))
 		return nil, fmt.Errorf("update kyc record upstream info failed: %w", err)
 	}
-	kycRecord.UpToken = detect.BizToken
-	audit.KycRecord("kyc_upstream_token", "console", kycRecord, audit.KV("token", detect.BizToken))
+	kycRecord.UpToken = detect.Token
+	audit.KycRecord("kyc_upstream_token", "console", kycRecord, audit.KV("token", detect.Token))
 
 	// 拼接 H5 核身地址：Url?token=BizToken
 	return &StartAuthResult{
 		KycRecord: kycRecord,
-		AuthURL:   detect.Url + "&token=" + detect.BizToken,
-		Token:     detect.BizToken,
+		AuthURL:   detect.AuthURL,
+		Token:     detect.Token,
 	}, nil
 }
 
@@ -570,11 +565,10 @@ func (s *AuthService) StartFvAuth(userID, apiID int64, product, name, idCard, re
 	// 上游 return_url 指向本平台 API 域 return 回调端点：核身后先回平台校对，再 302 下游
 	siteReturn := site.Platform().APIBase() + "/v1/fv/return"
 	req := &upstream.GetTokenRequest{
-		SignVersion:    upstream.SignVersionHMACSHA256,
 		ReturnURL:      siteReturn,
 		NotifyURL:      finAuthNotifyURL(),
 		BizNo:          bizNo,
-		SceneID:        s.finAuthCfg().SceneID,
+		Product:        product,
 		ComparisonType: "1", // 人脸核验模式
 		UUID:           fmt.Sprintf("%d", userID),
 		IDCardMode:     "0", // 直接传入姓名与证件号
@@ -583,7 +577,7 @@ func (s *AuthService) StartFvAuth(userID, apiID int64, product, name, idCard, re
 		BizExtraData:   bizExtraData,
 	}
 
-	tokenResp, err := s.finAuthClient().GetToken(req)
+	tokenResp, err := s.finAuth.GetToken(req)
 	if err != nil {
 		log.Printf("获取 FinAuth Token 失败: %v", err)
 		s.markRecordStartFailed(record)
@@ -720,10 +714,10 @@ func (s *AuthService) StartKybAuth(
 	if user, err := s.userRepo.GetUserByID(userID); err == nil && user.RealnameStatus == model.RealnameEnterprise {
 		return nil, errors.New("已企业实名，无需重复认证")
 	}
-	if s.platformOcr == nil {
+	if s.enterpriseVerifier == nil {
 		return nil, errors.New("营业执照四要素核验服务未配置")
 	}
-	if s.platformFaceId == nil {
+	if s.faceProvider == nil {
 		return nil, errors.New("人脸核身服务未配置")
 	}
 
@@ -764,7 +758,7 @@ func (s *AuthService) StartKybAuth(
 	}
 
 	// 第一步：营业执照四要素核验（企业名称 + 统一社会信用代码 + 法人姓名 + 法人身份证号）
-	four, err := s.platformOcr.VerifyBizLicenseEnterprise4(companyName, creditCode, legalName, legalIDCard)
+	four, err := s.enterpriseVerifier.Verify(companyName, creditCode, legalName, legalIDCard)
 	if err != nil {
 		// 上游异常：已扣费则原路退还，核验终止
 		log.Printf("企业四要素核验上游调用失败 [user_id=%d, biz_no=%s]: %v", userID, bizNo, err)
@@ -775,7 +769,7 @@ func (s *AuthService) StartKybAuth(
 		audit.KybRecord("kyb_land", "console", rec, audit.KV("stage", "four_factor"))
 		return nil, fmt.Errorf("企业信息核验异常，请稍后重试")
 	}
-	if four.VerifyResult != 1 {
+	if !four.Matched {
 		// 四要素不一致：核验不通过，占用一次核验次数
 		_ = s.kybRepo.UpdateFourFactor(rec.ID, 2, four.RawData)
 		_ = s.kybRepo.UpdateResult(rec.ID, 3, "FOUR_FACTOR_MISMATCH", "企业信息核验未通过，请核对企业名称、统一社会信用代码、法人信息后重试", four.RawData, nil)
@@ -792,7 +786,7 @@ func (s *AuthService) StartKybAuth(
 	audit.KybRecord("kyb_land", "console", rec, audit.KV("stage", "four_factor"))
 
 	// 第二步：法人本人人脸核身高并发起（转向 H5 核身地址，完成核身后跳回企业实名页同步结果）
-	detect, err := s.platformFaceId.DetectAuth(legalName, legalIDCard, s.hostsFor(userID).ConsoleBase()+"/certification", bizNo)
+	detect, err := s.faceProvider.StartAuth(legalName, legalIDCard, s.hostsFor(userID).ConsoleBase()+"/certification", bizNo)
 	if err != nil {
 		s.refundKycCharge(userID, payType, packID, kybPrice, rec.ID, "kyb")
 		_ = s.kybRepo.UpdateResult(rec.ID, 3, "TIMEOUT", "连接超时", "", nil)
@@ -801,19 +795,19 @@ func (s *AuthService) StartKybAuth(
 		return nil, fmt.Errorf("detect auth failed: %w", err)
 	}
 	// 存储 BizToken 到记录中，供后续查询结果
-	if err := s.kybRepo.UpdateUpstreamInfo(rec.ID, detect.BizToken, "", detect.BizToken); err != nil {
+	if err := s.kybRepo.UpdateUpstreamInfo(rec.ID, detect.Token, "", detect.Token); err != nil {
 		// 已扣费则原路退还（与 DetectAuth 失败分支一致，避免用户白扣费）
 		s.refundKycCharge(userID, payType, packID, kybPrice, rec.ID, "kyb")
 		_ = s.kybRepo.UpdateResult(rec.ID, 3, "TIMEOUT", "写入token失败", "", nil)
 		return nil, fmt.Errorf("update kyc enterprise upstream info failed: %w", err)
 	}
-	rec.UpToken = detect.BizToken
+	rec.UpToken = detect.Token
 	audit.KybRecord("kyb_upstream_token", "console", rec)
 
 	// 拼接 H5 核身地址：Url?token=BizToken
 	return &StartAuthResult{
-		AuthURL: detect.Url + "&token=" + detect.BizToken,
-		Token:   detect.BizToken,
+		AuthURL: detect.AuthURL,
+		Token:   detect.Token,
 	}, nil
 }
 
@@ -831,21 +825,21 @@ func (s *AuthService) BuildKybAuthURL(rec *model.KybEnterprise) string {
 // SyncKybResult 同步最新企业实名记录的法人扫脸结果（腾讯云人脸核身 GetDetectInfo）：
 // 成功（ErrCode==0）落地 user 表实名；返回终态失败则落失败；未完成保持待法人扫脸。
 func (s *AuthService) SyncKybResult(userID int64) error {
-	if s.platformFaceId == nil {
+	if s.faceProvider == nil {
 		return nil
 	}
 	rec, err := s.kybRepo.GetLatestByUserID(userID)
 	if err != nil || rec == nil || rec.Status != 1 || rec.UpToken == "" {
 		return nil
 	}
-	result, err := s.platformFaceId.GetDetectInfo(rec.UpToken)
+	result, err := s.faceProvider.QueryResult(rec.UpToken)
 	if err != nil {
 		log.Printf("同步企业实名扫脸结果失败 [user_id=%d, record_id=%d, biz_token=%s]: %v", userID, rec.ID, rec.UpToken, err)
 		return err
 	}
-	log.Printf("企业实名扫脸结果 [user_id=%d, record_id=%d, err_code=%d, description=%s]", userID, rec.ID, result.ErrCode, result.Description)
+	log.Printf("企业实名扫脸结果 [user_id=%d, record_id=%d, result_code=%s, pending=%t]", userID, rec.ID, result.Code, result.Pending)
 	now := time.Now()
-	if result.ErrCode == 0 {
+	if result.Success {
 		// 法人扫脸通过：落地企业实名
 		if err := s.kybRepo.UpdateResult(rec.ID, 2, "0", "认证成功", "", &now); err != nil {
 			return err
@@ -857,10 +851,10 @@ func (s *AuthService) SyncKybResult(userID int64) error {
 	}
 	// 返回终态失败时（Description 非空）落失败；否则视为仍在认证中，保持待法人扫脸。
 	// 失败不写 verified_at（该列语义为认证通过时间，个人实名失败同样不写）
-	if result.Description != "" {
-		_ = s.kybRepo.UpdateResult(rec.ID, 3, fmt.Sprintf("%d", result.ErrCode), result.Description, "", nil)
-		rec.Status, rec.ResultCode, rec.ResultMessage = 3, fmt.Sprintf("%d", result.ErrCode), result.Description
-		audit.KybRecord("kyb_land", "sync", rec, audit.KV("result_message", result.Description))
+	if !result.Pending && result.Message != "" {
+		_ = s.kybRepo.UpdateResult(rec.ID, 3, result.Code, result.Message, "", nil)
+		rec.Status, rec.ResultCode, rec.ResultMessage = 3, result.Code, result.Message
+		audit.KybRecord("kyb_land", "sync", rec, audit.KV("result_message", result.Message))
 	}
 	return nil
 }
@@ -903,8 +897,8 @@ func (s *AuthService) ListKycPersonalRecords(status, page, pageSize int) ([]*rep
 
 // GetRecordBestImg 获取认证记录的活体最佳图（下游 API 调用）。
 // 约束：认证成功（status=2）后 24 小时内可领取，且每笔订单仅可领取一次。
-// 取图顺序：优先返回认证成功时已落盘的照片（零上游查询消耗），
-// 本地无文件时才向上游 get_result 取图（受每单 3 次查询额度预算约束，避免把结果数据打销毁）。
+// 取图顺序：优先返回认证成功时已落盘的照片（零上游调用），
+// 本地无文件时才向上游平台按业务号领取活体图（base64）。
 func (s *AuthService) GetRecordBestImg(userID int64, bizNo string) (string, error) {
 	record, err := s.recordRepo.GetRecordByBizNo(bizNo)
 	if err != nil {
@@ -936,19 +930,11 @@ func (s *AuthService) GetRecordBestImg(userID int64, bizNo string) (string, erro
 		return img, nil
 	}
 
-	// 本地无文件时才向上游取图（base64），受每单查询额度预算约束
-	result, err := s.queryUpstreamResult(record, "best_img")
+	// 本地无文件时向上游平台领取活体最佳图（base64）
+	img, err := s.finAuth.GetBestImg(record.UpBizID)
 	if err != nil {
-		if errors.Is(err, errUpQueryExhausted) {
-			log.Printf("活体最佳图不可取回（上游查询次数已用尽）[record_id=%d, biz_no=%s]", record.ID, record.BizNo)
-			return "", fmt.Errorf("该订单上游结果已不可取回（可查询次数已用尽），无法获取活体图片")
-		}
 		log.Printf("获取活体最佳图失败 [record_id=%d, biz_id=%s]: %v", record.ID, record.UpBizID, err)
 		return "", fmt.Errorf("获取活体图片失败，请稍后重试")
-	}
-	img := result.Images["image_best"]
-	if img == "" {
-		img = result.Images["best_img"]
 	}
 	if img == "" {
 		return "", fmt.Errorf("上游未返回活体图片")
@@ -964,7 +950,7 @@ func (s *AuthService) GetRecordBestImg(userID int64, bizNo string) (string, erro
 }
 
 // readLocalBestImg 读取认证成功时已落盘的活体最佳图（base64）；本地无文件或媒体已过期时返回 false。
-// 用于避免为取图再消耗一次上游 get_result 额度（上游每单仅允许 3 次）。
+// 用于避免为取图再发起一次上游调用。
 func (s *AuthService) readLocalBestImg(record *model.AuthRecord) (string, bool) {
 	if record.MediaDir == "" {
 		return "", false
@@ -979,10 +965,17 @@ func (s *AuthService) readLocalBestImg(record *model.AuthRecord) (string, bool) 
 	return base64.StdEncoding.EncodeToString(data), true
 }
 
-// saveRecordMedia 认证结果确定后自动下载保存照片与视频（保存 30 天，期间可经 /v1/fv/media 下载）。
+// saveRecordMedia 认证成功后自动下载保存照片与视频（保存 30 天，期间可经 /v1/fv/media 下载）。
+// 媒体不在结果通知中，需按业务号向上游平台单独领取（照片 jpg 与视频 mp4 均为 base64）。
 // 幂等：订单已保存过媒体（media_dir 非空）则跳过。媒体保存失败仅记录日志，不阻断结果落库与下游通知。
-func (s *AuthService) saveRecordMedia(record *model.AuthRecord, images map[string]string, video string) {
-	if record.MediaDir != "" {
+func (s *AuthService) saveRecordMedia(record *model.AuthRecord) {
+	if record.MediaDir != "" || record.UpBizID == "" {
+		return
+	}
+
+	media, err := s.finAuth.GetMedia(record.UpBizID)
+	if err != nil {
+		log.Printf("获取认证媒体失败 [record_id=%d, biz_no=%s]: %v", record.ID, record.BizNo, err)
 		return
 	}
 
@@ -995,11 +988,7 @@ func (s *AuthService) saveRecordMedia(record *model.AuthRecord, images map[strin
 
 	saved := false
 	// 保存最佳人脸照片（上游 base64）
-	img := images["image_best"]
-	if img == "" {
-		img = images["best_img"]
-	}
-	if img != "" {
+	if img := media["image_best"]; img != "" {
 		if data, err := base64.StdEncoding.DecodeString(img); err == nil {
 			if err := os.WriteFile(filepath.Join(dir, "image_best.jpg"), data, 0o644); err != nil {
 				log.Printf("保存认证照片失败 [record_id=%d]: %v", record.ID, err)
@@ -1011,18 +1000,16 @@ func (s *AuthService) saveRecordMedia(record *model.AuthRecord, images map[strin
 		}
 	}
 
-	// 保存验证视频（上游 AES-ECB 加密，下载后解密存储）
-	if video != "" {
-		data, err := s.finAuthClient().DownloadVideo(video)
-		if err != nil {
-			log.Printf("下载认证视频失败 [record_id=%d]: %v", record.ID, err)
-		} else {
-			data = upstream.DecryptVideoAESECB(data, s.finAuthCfg().APISecret)
+	// 保存验证视频（上游 base64）
+	if video := media["video"]; video != "" {
+		if data, err := base64.StdEncoding.DecodeString(video); err == nil {
 			if err := os.WriteFile(filepath.Join(dir, "video.mp4"), data, 0o644); err != nil {
 				log.Printf("保存认证视频失败 [record_id=%d]: %v", record.ID, err)
 			} else {
 				saved = true
 			}
+		} else {
+			log.Printf("认证视频 base64 解码失败 [record_id=%d]: %v", record.ID, err)
 		}
 	}
 
@@ -1127,10 +1114,7 @@ func (s *AuthService) queryUpstreamResult(record *model.AuthRecord, source strin
 
 	auditUpstreamQuery(record, source)
 
-	return s.finAuthClient().GetResult(&upstream.GetResultRequest{
-		BizID:       record.UpBizID,
-		SignVersion: upstream.SignVersionHMACSHA256,
-	})
+	return s.finAuth.GetResult(&upstream.GetResultRequest{BizID: record.UpBizID})
 }
 
 // auditUpstreamQuery 记录一次「平台主动向上游反查结果」的审计行（含触发来源与已用次数）
@@ -1213,18 +1197,18 @@ func (s *AuthService) SyncKycRecord(userID int64) (*model.KycPersonal, error) {
 // syncKycRecordResult 同步实名记录结果（从腾讯云人脸核身查询，账户实名 source=1）：
 // 成功（ErrCode==0）落地 user 表实名；返回终态失败（Description 非空）落失败；未完成保持认证中。
 func (s *AuthService) syncKycRecordResult(record *model.KycPersonal) {
-	if s.platformFaceId == nil || record.UpToken == "" {
+	if s.faceProvider == nil || record.UpToken == "" {
 		return
 	}
 
-	result, err := s.platformFaceId.GetDetectInfo(record.UpToken)
+	result, err := s.faceProvider.QueryResult(record.UpToken)
 	if err != nil {
 		log.Printf("同步实名记录结果失败 [record_id=%d, biz_token=%s]: %v", record.ID, record.UpToken, err)
 		return
 	}
 
 	now := time.Now()
-	if result.ErrCode == 0 {
+	if result.Success {
 		// 核身通过：落地个人实名
 		if err := s.kycRecordRepo.UpdateResult(record.ID, 2, "0", "认证成功", "", &now); err != nil {
 			log.Printf("更新实名记录结果失败 [record_id=%d]: %v", record.ID, err)
@@ -1236,10 +1220,10 @@ func (s *AuthService) syncKycRecordResult(record *model.KycPersonal) {
 		return
 	}
 	// 返回终态失败时（Description 非空）落失败；否则视为仍在认证中，保持认证中状态
-	if result.Description != "" {
-		_ = s.kycRecordRepo.UpdateResult(record.ID, 3, fmt.Sprintf("%d", result.ErrCode), result.Description, "", nil)
-		record.Status, record.ResultCode, record.ResultMessage = 3, fmt.Sprintf("%d", result.ErrCode), result.Description
-		audit.KycRecord("kyc_land", "sync", record, audit.KV("result_message", result.Description))
+	if !result.Pending && result.Message != "" {
+		_ = s.kycRecordRepo.UpdateResult(record.ID, 3, result.Code, result.Message, "", nil)
+		record.Status, record.ResultCode, record.ResultMessage = 3, result.Code, result.Message
+		audit.KycRecord("kyc_land", "sync", record, audit.KV("result_message", result.Message))
 	}
 }
 
@@ -1430,7 +1414,7 @@ func (s *AuthService) syncRecordResult(record *model.AuthRecord, source string, 
 	// 账户实名记录（kyc）由 syncKycRecordResult 依据腾讯云人脸核身结果单独落地，不回写
 	if status == model.AuthStatusSuccess {
 		// 认证成功后自动下载保存照片与视频（30 天，供下游 API 下载）
-		s.saveRecordMedia(record, result.Images, result.Video)
+		s.saveRecordMedia(record)
 	}
 
 	// 通知下游
@@ -1467,7 +1451,7 @@ func (s *AuthService) QueryRecordResultForAdmin(recordID int64) (*model.AuthReco
 // data: JSON 字符串，sign: HMAC 签名
 func (s *AuthService) HandleUpstreamCallback(data, sign string) error {
 	// 1. 验证签名（FinAuth 下游凭据）
-	if !s.finAuthClient().VerifySign(data, sign) {
+	if !s.finAuth.VerifySign(data, sign) {
 		log.Printf("回调签名验证失败: data=%s, sign=%s", data, sign)
 		logstore.RecordSysCall("callback", "finauth", "", 0, "", upstream.RedactPayload([]byte(data)),
 			"signature verification failed", 0)
@@ -1535,7 +1519,7 @@ func (s *AuthService) HandleUpstreamCallback(data, sign string) error {
 	// 账户实名记录（kyc）由 syncKycRecordResult 依据腾讯云人脸核身结果单独落地，不回写
 	if status == 2 {
 		// 认证成功后自动下载保存照片与视频（30 天，供下游 API 下载）
-		s.saveRecordMedia(record, notifyData.Images, notifyData.Video)
+		s.saveRecordMedia(record)
 	}
 
 	// 通知下游

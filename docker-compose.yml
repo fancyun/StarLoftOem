@@ -89,20 +89,25 @@ services:
       # 敏感字段数据加密密钥（AES-256-GCM，32 字节）
       DATA_ENCRYPT_KEY: ${DATA_ENCRYPT_KEY}
       
-      # FinAuth 实名认证密钥（密钥类；场景 ID / 接口基址等非密钥配置在后台「系统设置」维护）
-      FINAUTH_API_KEY: ${FINAUTH_API_KEY}
-      FINAUTH_API_SECRET: ${FINAUTH_API_SECRET}
+      # 上游 StarLoft 平台 API 密钥对（密钥类；API 基址与营销通道开关在后台「系统设置」维护）
+      STARLOFT_API_KEY: ${STARLOFT_API_KEY}
+      STARLOFT_API_SECRET: ${STARLOFT_API_SECRET}
 
       # 待支付订单过期分钟数（超时自动向渠道撤回支付并关闭本地订单）
       PAYMENT_EXPIRE_MINUTES: ${PAYMENT_EXPIRE_MINUTES:-30}
 
-      # 联麓信息（shlianlu）短信 AppKey（密钥类；MchId / AppId / 基址等在后台「系统设置」维护）
-      SHLIANLU_KEY: ${SHLIANLU_KEY:-}
-
-      # 腾讯云账号密钥（密钥类；验证码 AppID / 地域 / 平台短信与法人扫脸参数在后台「系统设置」维护）
+      # 腾讯云账号密钥（密钥类；验证码 AppID / 地域 / 四要素核验与法人扫脸参数在后台「系统设置」维护）
       TENCENT_SECRET_ID: ${TENCENT_SECRET_ID}
       TENCENT_SECRET_KEY: ${TENCENT_SECRET_KEY}
       TENCENT_CAPTCHA_SECRET: ${TENCENT_CAPTCHA_SECRET}
+
+      # 极验行为验证码密钥（密钥类；CaptchaId 在后台「系统设置」维护）
+      GEETEST_CAPTCHA_KEY: ${GEETEST_CAPTCHA_KEY:-}
+
+      # 阿里云密钥与云市场 AppCode（密钥类；验证码场景 ID 在后台「系统设置」维护）
+      ALIYUN_ACCESS_KEY_ID: ${ALIYUN_ACCESS_KEY_ID:-}
+      ALIYUN_ACCESS_KEY_SECRET: ${ALIYUN_ACCESS_KEY_SECRET:-}
+      ALIYUN_MARKET_APPCODE: ${ALIYUN_MARKET_APPCODE:-}
 
       # 支付宝支付证书（密钥类；AppID 等在后台「系统设置」维护）
       ALIPAY_PRIVATE_KEY: ${ALIPAY_PRIVATE_KEY}

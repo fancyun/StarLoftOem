@@ -15,13 +15,12 @@ type Config struct {
 	Database  DatabaseConfig
 	Redis     RedisConfig
 	JWT       JWTConfig
-	FinAuth   FinAuthConfig
+	// StarLoft 平台开放 API：OEM 系统的唯一上游（短信产品、人脸核验产品、系统验证码短信、账户实名扫脸）
+	StarLoft  StarLoftConfig
 	Tencent   TencentConfig
 	Alipay    AlipayConfig
 	WechatPay WechatPayConfig
 	Log       LogConfig
-	// 联麓信息（shlianlu）短信网关：下游短信产品唯一通道（短信 API 3.0）
-	Shlianlu    ShlianluConfig
 	SMSPrice    float64 // 平台短信单价（元/条），短信计费使用（存短信产品库 product_config）
 	FvAuthPrice float64 // 下游有源人脸核验单价（元/次，存人脸核验产品库 product_config，未配置时按内置默认值兜底）
 	FvSelfPrice float64 // 下游无源人脸核验单价（元/次，存人脸核验产品库 product_config，未配置时按内置默认值兜底）
@@ -33,11 +32,14 @@ type Config struct {
 	// 账户实名（Web）免费次数用尽后的单价（元/次，存系统库 setting）
 	KycPersonalPrice   float64
 	KycEnterprisePrice float64
-	// 平台自用腾讯云能力（平台验证码短信 / 企业实名法人扫脸）：SecretId/SecretKey 复用 Tencent
-	TencentSmsSdkAppID         string   // 平台验证码短信应用 SDKAppID
-	TencentSmsVerifySign       string   // 平台验证码短信签名（已审核）
-	TencentSmsVerifyTemplateID string   // 平台验证码短信模板 ID（已审核）
-	TencentFaceIdRuleId        string   // 平台法人扫脸人脸核身业务流程 RuleId
+	// 平台自用能力：系统验证码短信（经上游 StarLoft 平台下发）与企业实名法人扫脸（腾讯云人脸核身，备选通道）
+	PlatformSmsSign       string // 平台验证码短信签名（上游已审核）
+	PlatformSmsTemplateID string // 平台验证码短信模板 ID（上游已审核）
+	TencentFaceIdRuleId   string // 平台法人扫脸人脸核身业务流程 RuleId（腾讯云备选通道）
+	// 账户实名人脸核身 provider：starloft-上游 StarLoft 平台（默认）/ tencent-腾讯云人脸核身
+	FaceProvider string
+	// 企业工商四要素核验 provider：tencent-腾讯云 OCR（默认）/ aliyun-阿里云
+	EnterpriseVerifyProvider string
 	TencentRegion              string   // 腾讯云服务地域（如 ap-guangzhou）
 	UploadDir                  string   // 用户上传文件目录（营业执照/身份证等图片）
 	MediaDir                   string   // 人脸核验认证媒体目录（照片/视频，容器内 /app/media，bind mount 宿主 ./data/media）
@@ -62,14 +64,13 @@ type ContactConfig struct {
 	Hours  string // 服务时间
 }
 
-// ShlianluConfig 联麓信息（shlianlu）短信网关配置（短信 API 3.0）
-type ShlianluConfig struct {
-	MchID string // 企业ID（MchId）
-	AppID string // 应用ID（AppId，验证码/通知短信通道）
-	// MarketingAppID 营销短信应用ID（联麓按 AppId 区分通知/营销通道）：留空表示营销短信不可用
-	MarketingAppID string
-	Key            string // AppKey（MD5 签名密钥）
-	BaseURL        string // API 基址（如 https://apis.shlianlu.com）
+// StarLoftConfig StarLoft 平台开放 API 配置（OEM 系统的唯一上游）
+type StarLoftConfig struct {
+	APIKey    string // API Key（密钥类，只走 .env）
+	APISecret string // API Secret（密钥类，只走 .env，用于请求签名与回调验签）
+	BaseURL   string // API 基址（如 https://api.example.com，存系统库 setting）
+	// MarketingEnabled 上游账号是否已开通营销短信通道：未开通时营销模板报备与营销短信发送不可用
+	MarketingEnabled bool
 }
 
 // LogConfig 日志配置
@@ -108,13 +109,6 @@ type JWTConfig struct {
 	AdminSecret string
 }
 
-type FinAuthConfig struct {
-	APIKey    string
-	APISecret string
-	SceneID   string
-	BaseURL   string
-}
-
 type TencentConfig struct {
 	SecretID  string
 	SecretKey string
@@ -144,6 +138,18 @@ type WechatPayConfig struct {
 	MchSerialNo     string // 商户 API 证书序列号
 	PublicKey       string // 微信支付公钥（PEM，用于回调验签）
 }
+
+// 账户实名人脸核身 provider 取值
+const (
+	FaceProviderStarLoft = "starloft" // 上游 StarLoft 平台开放 API（默认）
+	FaceProviderTencent  = "tencent"  // 腾讯云人脸核身（备选）
+)
+
+// 企业工商四要素核验 provider 取值
+const (
+	EnterpriseVerifyProviderTencent = "tencent" // 腾讯云 OCR（默认）
+	EnterpriseVerifyProviderAliyun  = "aliyun"  // 阿里云
+)
 
 // PaymentChannelEnabled 在线支付渠道启用开关：1-启用 2-不启用。
 // 未配置（0）按启用处理，渠道最终是否可用仍取决于凭据是否齐全（凭据缺失时客户端不构建、渠道不可用且不影响启动）。
@@ -220,9 +226,9 @@ func loadFromEnv(cfg *Config) {
 	cfg.JWT.AdminSecret = getEnv("JWT_ADMIN_SECRET", cfg.JWT.AdminSecret)
 	cfg.JWT.ExpireHours = getEnvInt("JWT_EXPIRE_HOURS", cfg.JWT.ExpireHours)
 
-	// FinAuth配置（API Key/Secret 为密钥类，只走本文件；SCENE_ID/BASE_URL 见文末默认值块）
-	cfg.FinAuth.APIKey = getEnv("FINAUTH_API_KEY", cfg.FinAuth.APIKey)
-	cfg.FinAuth.APISecret = getEnv("FINAUTH_API_SECRET", cfg.FinAuth.APISecret)
+	// StarLoft 平台开放 API（API Key/Secret 为密钥类，只走本文件；基址与营销开关见文末默认值块）
+	cfg.StarLoft.APIKey = getEnv("STARLOFT_API_KEY", cfg.StarLoft.APIKey)
+	cfg.StarLoft.APISecret = getEnv("STARLOFT_API_SECRET", cfg.StarLoft.APISecret)
 
 	// 腾讯云配置（SecretId/SecretKey/验证码 AppSecretKey 为密钥类，只走本文件）
 	cfg.Tencent.SecretID = getEnv("TENCENT_SECRET_ID", cfg.Tencent.SecretID)
@@ -260,19 +266,19 @@ func loadFromEnv(cfg *Config) {
 		cfg.UploadURLTTLDays = 365
 	}
 
-	// 上游回调信任 IP（英文逗号分隔，支持精确 IP 与 CIDR）：联麓/FinAuth/支付宝/微信推送来源；未配置时放行
+	// 上游回调信任 IP（英文逗号分隔，支持精确 IP 与 CIDR）：StarLoft 平台/支付宝/微信推送来源；未配置时放行
 	cfg.CallbackTrustIPs = splitList(getEnv("CALLBACK_TRUST_IPS", ""))
 
 	// 非密钥业务配置（单价/成本、开关、AppID/商户号、地域、接口基址、提成比例等）只存数据库
 	// （系统库 setting + 各产品库 product_config），不从 .env 读取；下列内置默认值仅用于数据库
 	// 无值时的兜底与首次启动播种，须与后台默认一致。
-	cfg.FinAuth.SceneID = "kyc"
-	cfg.FinAuth.BaseURL = "https://api.yljz.com"
+	cfg.StarLoft.BaseURL = "https://api.starloft.cn"
+	cfg.FaceProvider = FaceProviderStarLoft
+	cfg.EnterpriseVerifyProvider = EnterpriseVerifyProviderTencent
 	cfg.TencentRegion = "ap-guangzhou"
-	cfg.Tencent.Captcha.CaptchaAppID = "197971702"
+	cfg.Tencent.Captcha.CaptchaAppID = ""
 	cfg.Alipay.Enabled = 1
 	cfg.WechatPay.Enabled = 1
-	cfg.Shlianlu.BaseURL = "https://apis.shlianlu.com"
 	cfg.SMSPrice = 0.05
 	cfg.FvAuthPrice = 1.00
 	cfg.FvSelfPrice = 0.80
@@ -288,10 +294,6 @@ func loadFromEnv(cfg *Config) {
 	cfg.Contact.Hours = "周一至周日 8:00 - 24:00"
 	// 各产品成本单价（FV_AUTH_COST / FV_SELF_COST / SMS_COST）默认 0（无成本），仅在后台产品配置中维护；
 	// 支付日限额（PAYMENT_DAILY_LIMIT）默认 0（不限），仅在后台系统设置中维护。
-
-	// 联麓短信网关（下游短信产品唯一通道）：AppKey 为密钥类，只走本文件；
-	// MchId/AppId/BaseURL 见上方默认值块（登录联麓平台 → 相关产品 → 概览 →「API接口参数」获取）
-	cfg.Shlianlu.Key = getEnv("SHLIANLU_KEY", "")
 
 	// 待支付订单过期分钟数（默认 30），超时自动向渠道撤回支付并关闭本地订单
 	if v := getEnvInt("PAYMENT_EXPIRE_MINUTES", 0); v > 0 {

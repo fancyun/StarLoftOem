@@ -34,17 +34,22 @@ func ApplySettingOverrides(cfg *Config, sys, fv, sms map[string]string) {
 		}
 	}
 
-	// FinAuth（下游实名/人脸核验）：API_KEY/API_SECRET 为密钥类，只走 .env
-	applyString(&cfg.FinAuth.SceneID, sys, "FINAUTH_SCENE_ID")
-	applyString(&cfg.FinAuth.BaseURL, sys, "FINAUTH_BASE_URL")
+	// 上游 StarLoft 平台：API_KEY/API_SECRET 为密钥类，只走 .env
+	applyString(&cfg.StarLoft.BaseURL, sys, SettingKeyStarLoftBaseURL)
+	applyBool(&cfg.StarLoft.MarketingEnabled, sys, SettingKeyStarLoftSmsMarketingEnabled)
 
 	// 腾讯云：SECRET_ID/SECRET_KEY/CAPTCHA_SECRET 为密钥类（只走 .env），标识与地域可由数据库维护
 	applyString(&cfg.TencentRegion, sys, "TENCENT_REGION")
 	applyString(&cfg.Tencent.Captcha.CaptchaAppID, sys, "TENCENT_CAPTCHA_APP_ID")
-	applyString(&cfg.TencentSmsSdkAppID, sys, "PLATFORM_TENCENT_SMS_SDKAPPID")
-	applyString(&cfg.TencentSmsVerifySign, sys, "PLATFORM_TENCENT_SMS_VERIFY_SIGN")
-	applyString(&cfg.TencentSmsVerifyTemplateID, sys, "PLATFORM_TENCENT_SMS_VERIFY_TEMPLATE_ID")
 	applyString(&cfg.TencentFaceIdRuleId, sys, "PLATFORM_TENCENT_FACEID_RULE_ID")
+
+	// 平台验证码短信（经上游 StarLoft 平台下发）：签名与模板须为上游已审核通过
+	applyString(&cfg.PlatformSmsSign, sys, SettingKeyPlatformSmsSign)
+	applyString(&cfg.PlatformSmsTemplateID, sys, SettingKeyPlatformSmsTemplateID)
+
+	// 账户实名人脸核身 / 企业工商四要素核验的 provider 选择
+	applyString(&cfg.FaceProvider, sys, SettingKeyFaceProvider)
+	applyString(&cfg.EnterpriseVerifyProvider, sys, SettingKeyEnterpriseVerifyProvider)
 
 	// 支付宝支付（PEM 证书走 certs/ 目录文件，不入配置表）
 	applyInt(&cfg.Alipay.Enabled, sys, "ALIPAY_ENABLED")
@@ -53,12 +58,6 @@ func ApplySettingOverrides(cfg *Config, sys, fv, sms map[string]string) {
 	applyString(&cfg.WechatPay.AppID, sys, "WECHAT_APP_ID")
 	applyString(&cfg.WechatPay.MchID, sys, "WECHAT_MCH_ID")
 	applyString(&cfg.WechatPay.MchSerialNo, sys, "WECHAT_MCH_SERIAL_NO")
-
-	// 短信上游（联麓）：AppKey 为密钥类（只走 .env）
-	applyString(&cfg.Shlianlu.MchID, sys, "SHLIANLU_MCH_ID")
-	applyString(&cfg.Shlianlu.AppID, sys, "SHLIANLU_APP_ID")
-	applyString(&cfg.Shlianlu.MarketingAppID, sys, "SHLIANLU_MARKETING_APP_ID")
-	applyString(&cfg.Shlianlu.BaseURL, sys, "SHLIANLU_BASE_URL")
 
 	// 产品库平台单价（人脸核验库仅产品自身单价）
 	applyFloat(&cfg.FvAuthPrice, fv, model.ProductConfigFvAuthPrice)
@@ -88,6 +87,16 @@ func ApplySettingOverrides(cfg *Config, sys, fv, sms map[string]string) {
 
 // 账户实名单价配置键（存系统库设置表）
 const (
+	// 上游 StarLoft 平台（唯一上游）：密钥类 API Key/Secret 只走 .env
+	SettingKeyStarLoftBaseURL              = "STARLOFT_API_BASE_URL"
+	SettingKeyStarLoftSmsMarketingEnabled  = "STARLOFT_SMS_MARKETING_ENABLED"
+	// 平台验证码短信（经上游 StarLoft 平台下发）
+	SettingKeyPlatformSmsSign       = "PLATFORM_SMS_SIGN"
+	SettingKeyPlatformSmsTemplateID = "PLATFORM_SMS_TEMPLATE_ID"
+	// 账户实名人脸核身 / 企业工商四要素核验的 provider 选择
+	SettingKeyFaceProvider             = "FACE_PROVIDER"
+	SettingKeyEnterpriseVerifyProvider = "ENTERPRISE_VERIFY_PROVIDER"
+
 	SettingKeyKycPersonalPrice   = "KYC_PERSONAL_PRICE"
 	SettingKeyKycEnterprisePrice = "KYC_ENTERPRISE_PRICE"
 	// 支付风控
@@ -115,17 +124,22 @@ type SettingSpec struct {
 // IsSecretSettingKey）均不在此列，只由 .env 提供。
 func SettingCatalog() []SettingSpec {
 	return []SettingSpec{
-		// 实名核验（FinAuth）：API Key/Secret 为密钥类，只走 .env
-		{"FINAUTH_SCENE_ID", model.SettingCategoryFinAuth, "FinAuth 场景 ID"},
-		{"FINAUTH_BASE_URL", model.SettingCategoryFinAuth, "FinAuth 接口基址"},
+		// 上游 StarLoft 平台：API Key/Secret 为密钥类，只走 .env
+		{SettingKeyStarLoftBaseURL, model.SettingCategoryStarLoft, "上游 StarLoft 平台 API 基址（如 https://api.example.com）"},
+		{SettingKeyStarLoftSmsMarketingEnabled, model.SettingCategoryStarLoft, "上游账号是否已开通营销短信通道：1-已开通 0-未开通（未开通时营销模块与营销短信不可用）"},
 
-		// 腾讯云（验证码 / 平台短信 / 人脸核身 / OCR）：SecretId/SecretKey/验证码 AppSecretKey 为密钥类，只走 .env
+		// 腾讯云（天御验证码 / 人脸核身 / OCR）：SecretId/SecretKey/验证码 AppSecretKey 为密钥类，只走 .env
 		{"TENCENT_REGION", model.SettingCategoryTencent, "腾讯云地域（如 ap-guangzhou）"},
 		{"TENCENT_CAPTCHA_APP_ID", model.SettingCategoryTencent, "天御验证码 AppID"},
-		{"PLATFORM_TENCENT_SMS_SDKAPPID", model.SettingCategoryTencent, "平台验证码短信 SDKAppID"},
-		{"PLATFORM_TENCENT_SMS_VERIFY_SIGN", model.SettingCategoryTencent, "平台验证码短信签名（已审核）"},
-		{"PLATFORM_TENCENT_SMS_VERIFY_TEMPLATE_ID", model.SettingCategoryTencent, "平台验证码短信模板 ID（已审核）"},
-		{"PLATFORM_TENCENT_FACEID_RULE_ID", model.SettingCategoryTencent, "法人扫脸人脸核身 RuleId"},
+		{"PLATFORM_TENCENT_FACEID_RULE_ID", model.SettingCategoryTencent, "法人扫脸人脸核身 RuleId（腾讯云备选通道）"},
+
+		// 平台验证码短信（经上游 StarLoft 平台下发）
+		{SettingKeyPlatformSmsSign, model.SettingCategorySMS, "平台验证码短信签名（须为上游已审核通过的签名内容）"},
+		{SettingKeyPlatformSmsTemplateID, model.SettingCategorySMS, "平台验证码短信模板 ID（须为上游已审核通过的模板）"},
+
+		// 账户实名人脸核身 / 企业工商四要素核验的 provider 选择
+		{SettingKeyFaceProvider, model.SettingCategoryCommon, "账户实名人脸核身 provider：starloft-上游平台（默认）/ tencent-腾讯云"},
+		{SettingKeyEnterpriseVerifyProvider, model.SettingCategoryCommon, "企业工商四要素核验 provider：tencent-腾讯云 OCR（默认）/ aliyun-阿里云"},
 
 		// 支付宝支付（APP_ID 为标识；PEM 证书见 certs/ 目录，均不纳入配置表）
 		{"ALIPAY_ENABLED", model.SettingCategoryAlipay, "启用开关：1-启用 2-不启用"},
@@ -136,12 +150,6 @@ func SettingCatalog() []SettingSpec {
 		{"WECHAT_APP_ID", model.SettingCategoryWechat, "微信 AppID"},
 		{"WECHAT_MCH_ID", model.SettingCategoryWechat, "微信商户号"},
 		{"WECHAT_MCH_SERIAL_NO", model.SettingCategoryWechat, "商户 API 证书序列号"},
-
-		// 短信服务（联麓，下游短信产品唯一上游）：AppKey 为密钥类，只走 .env
-		{"SHLIANLU_MCH_ID", model.SettingCategorySMS, "联麓企业 ID（MchId）"},
-		{"SHLIANLU_APP_ID", model.SettingCategorySMS, "联麓应用 ID（AppId，验证码/通知短信通道）"},
-		{"SHLIANLU_MARKETING_APP_ID", model.SettingCategorySMS, "联麓应用 ID（AppId，营销短信通道；留空表示营销短信不可用）"},
-		{"SHLIANLU_BASE_URL", model.SettingCategorySMS, "联麓 API 基址（如 https://apis.shlianlu.com）"},
 
 		// 账户实名单价（平台账户能力，成本由平台承担；人脸核验产品单价见各产品分区「产品配置」）
 		{SettingKeyKycPersonalPrice, model.SettingCategoryKYC, "个人实名免费次数用尽后单价（元/次）"},
@@ -167,24 +175,21 @@ func SettingCatalog() []SettingSpec {
 // 仅返回非密钥类配置；密钥类只由 .env 提供，不入配置表。
 func (cfg *Config) SettingValues() map[string]string {
 	return map[string]string{
-		"FINAUTH_SCENE_ID":                        cfg.FinAuth.SceneID,
-		"FINAUTH_BASE_URL":                        cfg.FinAuth.BaseURL,
-		"TENCENT_REGION":                          cfg.TencentRegion,
-		"TENCENT_CAPTCHA_APP_ID":                  cfg.Tencent.Captcha.CaptchaAppID,
-		"PLATFORM_TENCENT_SMS_SDKAPPID":           cfg.TencentSmsSdkAppID,
-		"PLATFORM_TENCENT_SMS_VERIFY_SIGN":        cfg.TencentSmsVerifySign,
-		"PLATFORM_TENCENT_SMS_VERIFY_TEMPLATE_ID": cfg.TencentSmsVerifyTemplateID,
-		"PLATFORM_TENCENT_FACEID_RULE_ID":         cfg.TencentFaceIdRuleId,
+		SettingKeyStarLoftBaseURL:             cfg.StarLoft.BaseURL,
+		SettingKeyStarLoftSmsMarketingEnabled: formatBool(cfg.StarLoft.MarketingEnabled),
+		"TENCENT_REGION":                      cfg.TencentRegion,
+		"TENCENT_CAPTCHA_APP_ID":              cfg.Tencent.Captcha.CaptchaAppID,
+		"PLATFORM_TENCENT_FACEID_RULE_ID":     cfg.TencentFaceIdRuleId,
+		SettingKeyPlatformSmsSign:             cfg.PlatformSmsSign,
+		SettingKeyPlatformSmsTemplateID:       cfg.PlatformSmsTemplateID,
+		SettingKeyFaceProvider:                cfg.FaceProvider,
+		SettingKeyEnterpriseVerifyProvider:    cfg.EnterpriseVerifyProvider,
 		"ALIPAY_ENABLED":                          strconv.Itoa(cfg.Alipay.Enabled),
 		"ALIPAY_APP_ID":                           cfg.Alipay.AppID,
 		"WECHAT_ENABLED":                          strconv.Itoa(cfg.WechatPay.Enabled),
 		"WECHAT_APP_ID":                           cfg.WechatPay.AppID,
 		"WECHAT_MCH_ID":                           cfg.WechatPay.MchID,
 		"WECHAT_MCH_SERIAL_NO":                    cfg.WechatPay.MchSerialNo,
-		"SHLIANLU_MCH_ID":                         cfg.Shlianlu.MchID,
-		"SHLIANLU_APP_ID":                         cfg.Shlianlu.AppID,
-		"SHLIANLU_MARKETING_APP_ID":               cfg.Shlianlu.MarketingAppID,
-		"SHLIANLU_BASE_URL":                       cfg.Shlianlu.BaseURL,
 		SettingKeyKycPersonalPrice:                formatFloat(cfg.KycPersonalPrice),
 		SettingKeyKycEnterprisePrice:              formatFloat(cfg.KycEnterprisePrice),
 		SettingKeyPaymentDailyLimit:               formatFloat(cfg.PaymentDailyLimit),
@@ -248,6 +253,14 @@ func formatFloat(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
+// formatBool 开关类配置格式化（1/0）
+func formatBool(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
+}
+
 // MissingThirdPartyKeys 返回第三方业务配置中缺失的关键项（不影响启动，仅提示对应能力不可用）。
 // 自举必需的数据库/Redis/JWT/加密密钥不在此列（由 config.validate 在启动早期强校验）。
 func (cfg *Config) MissingThirdPartyKeys() []string {
@@ -255,9 +268,11 @@ func (cfg *Config) MissingThirdPartyKeys() []string {
 		name string
 		val  string
 	}{
+		{"STARLOFT_API_KEY", cfg.StarLoft.APIKey},
+		{"STARLOFT_API_SECRET", cfg.StarLoft.APISecret},
+		{"STARLOFT_API_BASE_URL", cfg.StarLoft.BaseURL},
 		{"TENCENT_SECRET_ID", cfg.Tencent.SecretID},
 		{"TENCENT_SECRET_KEY", cfg.Tencent.SecretKey},
-		{"TENCENT_CAPTCHA_APP_ID", cfg.Tencent.Captcha.CaptchaAppID},
 		{"TENCENT_CAPTCHA_SECRET", cfg.Tencent.Captcha.AppSecretKey},
 	}
 	var missing []string
@@ -306,6 +321,20 @@ func applyInt(dst *int, kv map[string]string, key string) {
 	}
 	if n, err := strconv.Atoi(v); err == nil {
 		*dst = n
+	}
+}
+
+// applyBool 用 kv 中可解析的开关值覆盖目标布尔（1/true/on/yes 为真，0/false/off/no 为假）
+func applyBool(dst *bool, kv map[string]string, key string) {
+	v, ok := kv[key]
+	if !ok || v == "" {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "on", "yes":
+		*dst = true
+	case "0", "false", "off", "no":
+		*dst = false
 	}
 }
 

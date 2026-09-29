@@ -1,28 +1,30 @@
 package service
 
 import (
-	"encoding/json"
 	"fmt"
-
-	"oemrpa/internal/upstream"
 )
 
-// SMSService 短信服务（平台自用验证码短信，腾讯云通道）
+// VerificationSmsSender 平台自用验证码短信发送通道（OEM 系统唯一上游：StarLoft 平台开放 API）
+type VerificationSmsSender interface {
+	// SendVerificationSms 以已审核的模板下发一条验证码短信
+	SendVerificationSms(phone, templateID, signName, code string) error
+}
+
+// SMSService 短信服务（平台自用验证码短信，经上游 StarLoft 平台下发）
 type SMSService struct {
-	tencent       *upstream.TencentSmsClient
-	verifySign    string // 平台验证码短信签名（已审核）
-	verifyTplID   string // 平台验证码短信模板ID（已审核）
+	sender        VerificationSmsSender
+	verifySign    string // 平台验证码短信签名（上游已审核）
+	verifyTplID   string // 平台验证码短信模板 ID（上游已审核）
 	verifyCodeSvc *VerificationCodeService
 }
 
-// NewSMSService 创建短信服务
-// 未配置腾讯云短信通道或平台验证码签名时返回 nil（不启用短信验证码功能）
-func NewSMSService(tencent *upstream.TencentSmsClient, verifySign, verifyTplID string) *SMSService {
-	if tencent == nil || verifySign == "" {
+// NewSMSService 创建短信服务；未配置上游通道、平台验证码签名或模板时返回 nil（不启用短信验证码功能）
+func NewSMSService(sender VerificationSmsSender, verifySign, verifyTplID string) *SMSService {
+	if sender == nil || verifySign == "" || verifyTplID == "" {
 		return nil
 	}
 	return &SMSService{
-		tencent:       tencent,
+		sender:        sender,
 		verifySign:    verifySign,
 		verifyTplID:   verifyTplID,
 		verifyCodeSvc: NewVerificationCodeService(),
@@ -31,10 +33,10 @@ func NewSMSService(tencent *upstream.TencentSmsClient, verifySign, verifyTplID s
 
 // Enabled 短信服务是否可用
 func (s *SMSService) Enabled() bool {
-	return s != nil && s.tencent != nil
+	return s != nil && s.sender != nil
 }
 
-// SendVerificationCode 发送验证码（腾讯云短信通道）
+// SendVerificationCode 发送验证码（上游受理即视为已发送，送达结果以回执为准；码值以 Redis 为权威）
 func (s *SMSService) SendVerificationCode(phone string) error {
 	if !s.Enabled() {
 		return fmt.Errorf("短信服务未配置")
@@ -52,22 +54,8 @@ func (s *SMSService) SendVerificationCode(phone string) error {
 	// 生成验证码
 	code := s.verifyCodeSvc.GenerateCode()
 
-	// 集合类字段序列化为 JSON 字符串随 body 上送（参与签名黑名单，不上送签名）
-	phoneSetJSON, _ := json.Marshal([]string{phone})
-	// 模板参数与平台验证码短信模板一致（验证码）（腾讯云模板：您的验证码为{1}，5分钟内有效）
-	paramSetJSON, _ := json.Marshal([]string{code})
-
-	resp, err := s.tencent.SendSms(&upstream.SendSmsRequest{
-		PhoneNumberSet:   string(phoneSetJSON),
-		TemplateId:       s.verifyTplID,
-		SignName:         s.verifySign,
-		TemplateParamSet: string(paramSetJSON),
-	})
-	if err != nil {
+	if err := s.sender.SendVerificationSms(phone, s.verifyTplID, s.verifySign, code); err != nil {
 		return fmt.Errorf("发送短信失败: %w", err)
-	}
-	if resp.Status != "" && resp.Status != "00" {
-		return fmt.Errorf("短信发送失败: status=%s msg=%s", resp.Status, resp.Message)
 	}
 
 	// 保存验证码到 Redis

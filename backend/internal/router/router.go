@@ -156,10 +156,9 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 		return cfg.PaymentDailyLimit
 	})
 	authService := service.NewAuthService(
-		rt.FinAuth,
-		rt.FinAuthCfg,
-		rt.PlatformFaceId(),
-		rt.PlatformOcr(),
+		rt.FinAuth(),
+		rt.FaceProvider(),
+		rt.EnterpriseVerifier(),
 		authRecordRepo,
 		userRepo,
 		apiRepo,
@@ -183,8 +182,8 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 	// 资源包在线支付成交后按下级实付额计提推广提成
 	balanceService.SetCommissionAccruer(promotionService.AccruePackCommission)
 
-	// 短信业务服务（唯一上游联麓；未配置时由 handler 层兜底提示）
-	smsService := service.NewSmsChannelService(rt.Shlianlu(), rt.SMSPrice(), balanceService, promotionService, smsRepo, apiRepo, notifyService)
+	// 短信业务服务（唯一上游为 StarLoft 平台；未配置时由 handler 层兜底提示）
+	smsService := service.NewSmsChannelService(rt.SmsUpstream(), rt.SMSPrice(), balanceService, promotionService, smsRepo, apiRepo, notifyService)
 	smsHandler := handler.NewSMSHandler(smsService)
 	adminSMSHandler := handler.NewAdminSMSHandler(smsService)
 

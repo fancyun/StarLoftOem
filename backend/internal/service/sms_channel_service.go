@@ -22,12 +22,37 @@ import (
 	"unicode/utf8"
 )
 
+// SmsUpstream 短信通道上游接口：OEM 系统的唯一上游为 StarLoft 平台开放 API。
+// 接口口径与业务层的状态映射保持一致（签名：1-通过 2-待审核 3-驳回 4-报备中；模板：1-通过 2-待审核 3-驳回）。
+type SmsUpstream interface {
+	// MarketingAvailable 营销短信通道是否可用
+	MarketingAvailable() bool
+	// SendSms 发送模板短信，返回平台任务号（与本平台发送记录一一对应）
+	SendSms(req *upstream.SendSmsRequest) (*upstream.SendSmsResponse, error)
+	// CreateSign 创建短信签名，返回平台签名记录主键
+	CreateSign(req *upstream.CreateSignRequest) (*upstream.CreateSignResponse, error)
+	// DeleteSign 删除短信签名
+	DeleteSign(signID string) error
+	// CreateFreeTemplate 报备模板，返回平台模板标识
+	CreateFreeTemplate(req *upstream.CreateTemplateRequest) (string, error)
+	// UpdateTemplate 修改模板内容（名称与绑定签名不随之上送）
+	UpdateTemplate(templateID string, signID int64, name, content, smsType string) error
+	// GetSignStatus 查询签名审核状态，返回上游状态码与驳回原因
+	GetSignStatus(signID string) (int, string, error)
+	// GetTemplateStatus 查询模板审核状态，返回上游状态码与驳回原因
+	GetTemplateStatus(templateID, smsType string) (int, string, error)
+	// PullReport 按任务号拉取发送回执
+	PullReport(taskId string, pageNo, pageSize int) ([]upstream.SmsReportItem, error)
+	// PullReply 按日期拉取上行回复
+	PullReply(date string, pageNo, pageSize int) ([]upstream.SmsReplyItem, error)
+}
+
 // SmsChannelService 短信业务服务：
-// 封装联麓上游（下游短信产品唯一上游）与下游用户的按子产品扣费（先扣短信资源包再扣余额），
+// 封装上游（StarLoft 平台开放 API）与下游用户的按子产品扣费（先扣短信资源包再扣余额），
 // 并记录余额流水与发送记录（含实际使用的通道）。
-// 未配置联麓时（shlianlu 为空）返回明确的「短信通道未配置」错误，由调用方兜底提示。
+// 上游未配置时返回明确的「短信通道未配置」错误，由调用方兜底提示。
 type SmsChannelService struct {
-	shlianlu         *upstream.ShlianluClient // 下游短信产品唯一上游（联麓）
+	upstream         SmsUpstream // 短信产品唯一上游（StarLoft 平台）
 	smsPrice         float64
 	balanceService   *BalanceService
 	promotionService *PromotionService
@@ -36,9 +61,9 @@ type SmsChannelService struct {
 	notifySvc        *NotifyService
 }
 
-func NewSmsChannelService(shlianlu *upstream.ShlianluClient, smsPrice float64, balanceService *BalanceService, promotionService *PromotionService, smsRepo *repository.SMSRepository, apiKeyRepo *repository.ApiKeyRepository, notifySvc *NotifyService) *SmsChannelService {
+func NewSmsChannelService(up SmsUpstream, smsPrice float64, balanceService *BalanceService, promotionService *PromotionService, smsRepo *repository.SMSRepository, apiKeyRepo *repository.ApiKeyRepository, notifySvc *NotifyService) *SmsChannelService {
 	return &SmsChannelService{
-		shlianlu:         shlianlu,
+		upstream:         up,
 		smsPrice:         smsPrice,
 		balanceService:   balanceService,
 		promotionService: promotionService,
@@ -48,18 +73,18 @@ func NewSmsChannelService(shlianlu *upstream.ShlianluClient, smsPrice float64, b
 	}
 }
 
-// shlianluAvailable 上游联麓是否可用（未配置时返回 false，调用方兜底提示）
-func (s *SmsChannelService) shlianluAvailable() bool {
-	return s.shlianlu != nil
+// upstreamAvailable 上游通道是否可用（未配置时返回 false，调用方兜底提示）
+func (s *SmsChannelService) upstreamAvailable() bool {
+	return s.upstream != nil
 }
 
-// marketingAvailable 营销短信通道是否可用（未配置营销 AppId 时不可用，与支付渠道「凭据缺失则不可用」语义一致）
+// marketingAvailable 营销短信通道是否可用（上游未开通营销通道时不可用，与支付渠道「凭据缺失则不可用」语义一致）
 func (s *SmsChannelService) marketingAvailable() bool {
-	return s.shlianlu != nil && s.shlianlu.MarketingAvailable()
+	return s.upstream != nil && s.upstream.MarketingAvailable()
 }
 
 // signNamePattern 签名内容允许的字符：中文、英文、数字与中英文圆括号。
-// 联麓要求签名内容不含【】等符号（短信下发时由上游自动补充【】），带符号报「签名格式错误(status=39)」。
+// 上游要求签名内容不含【】等符号（短信下发时由上游自动补充【】），带符号报「签名格式错误(status=39)」。
 var signNamePattern = regexp.MustCompile(`^[\p{Han}A-Za-z0-9()（）]+$`)
 
 // normalizeSignName 归一化签名内容：去除【】中括号，中文圆括号统一替换为英文圆括号。
@@ -133,10 +158,10 @@ func (s *SmsChannelService) refundSms(userID int64, payType int, packID int64, p
 	return s.balanceService.RefundSmsCharge(userID, payType, packID, packCount, amount, recordID)
 }
 
-// CreateSign 提交短信签名（下游用户，唯一上游联麓）：走上游创建签名（含资质材料）。
+// CreateSign 提交短信签名（下游用户，唯一上游 StarLoft 平台）：走上游创建签名（含资质材料）。
 // 同签名内容待审核中禁止重复提交。提交不扣费。
 func (s *SmsChannelService) CreateSign(userID int64, sign *model.SmsSign) (*upstream.CreateSignResponse, error) {
-	if !s.shlianluAvailable() {
+	if !s.upstreamAvailable() {
 		return nil, fmt.Errorf("短信通道未配置")
 	}
 	sign.SignName = normalizeSignName(sign.SignName)
@@ -151,16 +176,16 @@ func (s *SmsChannelService) CreateSign(userID int64, sign *model.SmsSign) (*upst
 
 	sign.UserID = userID
 	sign.BizNo = utils.GenerateRandomDigits(20)
-	sign.Channel = "0" // 唯一上游联麓，channel 列保留固定值
+	sign.Channel = "0" // 唯一上游 StarLoft 平台，channel 列保留固定值
 	sign.Status = 0
 
-	// 联麓「本公司/他公司」是相对平台注册在上游的公司主体而言：用户报备的签名一律属于他公司
+	// 上游「本公司/他公司」是相对平台注册在上游的公司主体而言：用户报备的签名一律属于他公司
 	sign.SignType = 2
 	label, err := normalizeSignLabel(sign.Label)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := s.shlianlu.CreateSign(&upstream.CreateSignRequest{
+	resp, err := s.upstream.CreateSign(&upstream.CreateSignRequest{
 		Content:        sign.SignName,
 		SignType:       sign.SignType,
 		Label:          label,
@@ -190,13 +215,13 @@ func (s *SmsChannelService) CreateSign(userID int64, sign *model.SmsSign) (*upst
 	return resp, nil
 }
 
-// UpdateSign 修改短信签名（仅已通过/驳回的签名可改；联麓无修改接口，通过「删除旧签名→创建新签名」实现）。
+// UpdateSign 修改短信签名（仅已通过/驳回的签名可改；上游无修改接口，通过「删除旧签名→创建新签名」实现）。
 // 流程：① 校验签名归属与状态（仅 status∈{2,3} 可改，避免审核中并发冲突）；
 // ② 先删除本地记录对应的旧上游签名（同名签名已在上游存在时，直接创建会被判「签名已存在 status=25」）；
 // ③ 再调上游创建新签名（新 SignId）；④ 复用本地记录更新签名内容并重置为待审核。
 // 删除失败即中止（避免新旧签名在上游并存）；创建失败亦中止，此时旧签名已删除，本地记录仍指向旧 SignId，可重试。
 func (s *SmsChannelService) UpdateSign(userID, id int64, sign *model.SmsSign) (*model.SmsSign, error) {
-	if !s.shlianluAvailable() {
+	if !s.upstreamAvailable() {
 		return nil, fmt.Errorf("短信通道未配置")
 	}
 	sign.SignName = normalizeSignName(sign.SignName)
@@ -218,22 +243,22 @@ func (s *SmsChannelService) UpdateSign(userID, id int64, sign *model.SmsSign) (*
 	} else if n > 0 {
 		return nil, fmt.Errorf("同签名待审核中，请勿重复提交")
 	}
-	sign.SignType = 2 // 联麓统一按他公司主体报备
+	sign.SignType = 2 // 上游统一按他公司主体报备
 	label, err := normalizeSignLabel(sign.Label)
 	if err != nil {
 		return nil, err
 	}
 
-	// 先删除旧上游签名（联麓同名签名只允许存在一个，否则新建报「签名已存在」）
+	// 先删除旧上游签名（上游同名签名只允许存在一个，否则新建报「签名已存在」）
 	if old.UpSignID != "" {
-		if derr := s.shlianlu.DeleteSign(old.UpSignID); derr != nil {
+		if derr := s.upstream.DeleteSign(old.UpSignID); derr != nil {
 			log.Printf("修改签名删除旧上游签名失败 [sign_id=%d, up_sign_id=%s]: %v", old.ID, old.UpSignID, derr)
 			return nil, fmt.Errorf("删除原签名失败，请稍后重试: %w", derr)
 		}
 	}
 
 	// 再创建新签名
-	resp, err := s.shlianlu.CreateSign(&upstream.CreateSignRequest{
+	resp, err := s.upstream.CreateSign(&upstream.CreateSignRequest{
 		Content:        sign.SignName,
 		SignType:       sign.SignType,
 		Label:          label,
@@ -292,7 +317,7 @@ func (s *SmsChannelService) approvedSign(userID, signID int64, signName string) 
 
 // SendSMS 发送短信（下游透传）：校验模板/签名归属与审核状态后，进入发送与计费核心流程。
 // notifyURL 为下游回执主动推送地址（可选）：上游回执到达后平台将主动 POST 通知下游。
-// 当前通道（联麓）仅支持模板发送：必须携带 TemplateId，content 直发返回明确错误。
+// 当前通道（上游）仅支持模板发送：必须携带 TemplateId，content 直发返回明确错误。
 // signID 为签名记录主键（下游传 sign_id）：>0 时按主键直取，免去按名检索；为 0 时按 req.SignName 匹配。
 // 短信类型一律取模板自身的类型（模板为通道报备实体，决定上游通道与所扣资源包），不采信请求参数。
 func (s *SmsChannelService) SendSMS(userID, apiID, signID int64, req *upstream.SendSmsRequest, notifyURL string) (*upstream.SendSmsResponse, error) {
@@ -363,7 +388,7 @@ func (s *SmsChannelService) sendSMSWithResolvedSign(userID, apiID int64, tpl *mo
 	}
 
 	// 先落发送记录（失败也保留该记录并写入失败原因，成功后回填计费）
-	const channel = "shlianlu"
+	const channel = "starloft"
 	rec := &model.SmsSendRecord{
 		UserID:         userID,
 		BizNo:          utils.GenerateRandomDigits(20),
@@ -383,11 +408,11 @@ func (s *SmsChannelService) sendSMSWithResolvedSign(userID, apiID int64, tpl *mo
 	}
 	audit.SmsSendRecord("sms_create", "api", rec, audit.KV("api_id", apiID), audit.KV("channel", channel))
 
-	// 发送（联麓）；失败不扣费，保留记录与失败原因
-	if !s.shlianluAvailable() {
+	// 发送（上游）；失败不扣费，保留记录与失败原因
+	if !s.upstreamAvailable() {
 		return nil, s.markSendFailed(rec, "短信通道未配置")
 	}
-	resp, err := s.shlianlu.SendSms(req)
+	resp, err := s.upstream.SendSms(req)
 	if err != nil {
 		return nil, s.markSendFailed(rec, err.Error())
 	}
@@ -443,7 +468,7 @@ func parsePhoneList(phoneJSON string) []string {
 	return phones
 }
 
-// templateVarPattern 模板变量占位符（联麓格式 {%变量1%}、{%name%} 等）
+// templateVarPattern 模板变量占位符（上游格式 {%变量1%}、{%name%} 等）
 var templateVarPattern = regexp.MustCompile(`\{%[^}]*%\}`)
 
 // renderTemplateContent 把模板内容里的变量占位符按出现顺序替换为下游传入的参数值；
@@ -517,18 +542,18 @@ func signNeedsPlatformReview(sign *model.SmsSign) bool {
 	return sign != nil && sign.IsPublic == 1
 }
 
-// reportTemplateUpstream 向联麓报备模板：尚无上游模板 ID 时新建，已有则按当前内容编辑，返回上游模板 ID
+// reportTemplateUpstream 向上游报备模板：尚无上游模板 ID 时新建，已有则按当前内容编辑，返回上游模板 ID
 func (s *SmsChannelService) reportTemplateUpstream(t *model.SmsTemplate, upSignID string) (string, error) {
 	signId, _ := strconv.ParseInt(upSignID, 10, 64)
 	if t.TemplateID == "" {
-		return s.shlianlu.CreateFreeTemplate(&upstream.CreateTemplateRequest{
+		return s.upstream.CreateFreeTemplate(&upstream.CreateTemplateRequest{
 			SignId:       signId,
 			TemplateName: t.TemplateName,
 			Content:      t.TemplateContent,
 			SmsType:      t.TemplateType,
 		})
 	}
-	if err := s.shlianlu.UpdateTemplate(t.TemplateID, signId, t.TemplateName, t.TemplateContent, t.TemplateType); err != nil {
+	if err := s.upstream.UpdateTemplate(t.TemplateID, signId, t.TemplateName, t.TemplateContent, t.TemplateType); err != nil {
 		return "", err
 	}
 	return t.TemplateID, nil
@@ -537,7 +562,7 @@ func (s *SmsChannelService) reportTemplateUpstream(t *model.SmsTemplate, upSignI
 // CreateTemplate 提交模板申请（控制台用户）：绑定所选签名后报备上游。
 // 自有签名模板提交即报备上游（待上游审核）；公共签名模板先落库为待平台审核，平台审核通过后才报备上游。
 func (s *SmsChannelService) CreateTemplate(userID int64, t *model.SmsTemplate) error {
-	if !s.shlianluAvailable() {
+	if !s.upstreamAvailable() {
 		return fmt.Errorf("短信通道未配置")
 	}
 	smsType, err := normalizeSmsType(t.TemplateType)
@@ -553,7 +578,7 @@ func (s *SmsChannelService) CreateTemplate(userID int64, t *model.SmsTemplate) e
 	}
 
 	t.UserID = userID
-	t.Channel = "0" // 唯一上游联麓，channel 列保留固定值
+	t.Channel = "0" // 唯一上游 StarLoft 平台，channel 列保留固定值
 	t.TemplateType = smsType
 	t.Status = model.SmsTemplateStatusPending
 	t.SignID = sign.ID
@@ -576,7 +601,7 @@ func (s *SmsChannelService) CreateTemplate(userID int64, t *model.SmsTemplate) e
 // 自有签名模板按「名称 + 内容 + 绑定签名」整体提交上游后重置为待上游审核；
 // 改绑公共签名时先重置为待平台审核（不提交上游），平台审核通过后才按新内容报备上游。
 func (s *SmsChannelService) UpdateTemplate(userID, id int64, t *model.SmsTemplate) (*model.SmsTemplate, error) {
-	if !s.shlianluAvailable() {
+	if !s.upstreamAvailable() {
 		return nil, fmt.Errorf("短信通道未配置")
 	}
 	smsType, err := normalizeSmsType(t.TemplateType)
@@ -656,7 +681,7 @@ func (s *SmsChannelService) templateSignForAPI(userID, signID int64, signName st
 // 签名以 sign_id 优先（主键直取，免去按名检索），未传时按 sign_name 匹配；签名内容以实际命中的签名记录为准；
 // 命中的签名可为账号自有签名或公共签名。
 func (s *SmsChannelService) CreateTemplateForAPI(userID int64, name, content, smsType string, signID int64, signName string) (*model.SmsTemplate, error) {
-	if !s.shlianluAvailable() {
+	if !s.upstreamAvailable() {
 		return nil, fmt.Errorf("短信通道未配置")
 	}
 	normalized, err := normalizeSmsType(smsType)
@@ -671,7 +696,7 @@ func (s *SmsChannelService) CreateTemplateForAPI(userID int64, name, content, sm
 		TemplateName:    name,
 		TemplateContent: content,
 		TemplateType:    normalized,
-		Channel:         "0", // 唯一上游联麓
+		Channel:         "0", // 唯一上游 StarLoft 平台
 		Status:          model.SmsTemplateStatusPending,
 	}
 
@@ -706,7 +731,7 @@ func (s *SmsChannelService) GetTemplateForAPI(userID int64, id int64, upstreamID
 // 绑定公共签名的模板改内容同样先平台审核（不提交上游），通过后才按新内容提交上游。
 // 原绑定签名失效（被驳回/删除）时回落该用户最近一条已审核通过的签名。
 func (s *SmsChannelService) UpdateTemplateForAPI(userID int64, id int64, content string) (*model.SmsTemplate, error) {
-	if !s.shlianluAvailable() {
+	if !s.upstreamAvailable() {
 		return nil, fmt.Errorf("短信通道未配置")
 	}
 	old, err := s.smsRepo.GetTemplateByID(userID, id, "")
@@ -804,7 +829,7 @@ func (s *SmsChannelService) ReviewTemplate(id int64, status int, reason string) 
 // approveTemplatePlatformReview 平台审核通过：先原子认领（3→0，防并发重复报备）再报备上游；
 // 报备失败回滚为待平台审核并返回错误（管理员可修正后重试）。
 func (s *SmsChannelService) approveTemplatePlatformReview(t *model.SmsTemplate) error {
-	if !s.shlianluAvailable() {
+	if !s.upstreamAvailable() {
 		return fmt.Errorf("短信通道未配置")
 	}
 	sign, err := s.smsRepo.GetSignByIDForAdmin(t.SignID)
@@ -876,7 +901,7 @@ func normalizeSmsType(t string) (string, error) {
 	return "", fmt.Errorf("暂不支持该短信类型（当前仅支持验证码/通知/营销短信）")
 }
 
-// QuerySignStatus 手动查询签名审核状态（用户侧）：调上游（联麓）核对并回写本地
+// QuerySignStatus 手动查询签名审核状态（用户侧）：调上游（上游）核对并回写本地
 func (s *SmsChannelService) QuerySignStatus(userID, id int64) (*model.SmsSign, error) {
 	sign, err := s.querySignStatus(userID, id)
 	auditSign(sign, "console", "sign_query")
@@ -941,7 +966,7 @@ func (s *SmsChannelService) querySignStatus(userID, id int64) (*model.SmsSign, e
 	if sign.UpSignID == "" {
 		return sign, nil
 	}
-	upStatus, refuse, err := s.shlianlu.GetSignStatus(sign.UpSignID)
+	upStatus, refuse, err := s.upstream.GetSignStatus(sign.UpSignID)
 	if err != nil {
 		return nil, err
 	}
@@ -972,7 +997,7 @@ func (s *SmsChannelService) querySignStatus(userID, id int64) (*model.SmsSign, e
 	return sign, nil
 }
 
-// QueryTemplateStatus 手动查询模板审核状态（用户侧）：调上游（联麓）核对并回写本地
+// QueryTemplateStatus 手动查询模板审核状态（用户侧）：调上游（上游）核对并回写本地
 func (s *SmsChannelService) QueryTemplateStatus(userID, id int64) (*model.SmsTemplate, error) {
 	t, err := s.queryTemplateStatus(userID, id)
 	auditTemplate(t, "console", "template_query")
@@ -1009,7 +1034,7 @@ func (s *SmsChannelService) queryTemplateStatus(userID, id int64) (*model.SmsTem
 	if t.TemplateID == "" || t.Status == model.SmsTemplateStatusPlatformReview {
 		return t, nil
 	}
-	upStatus, refuse, err := s.shlianlu.GetTemplateStatus(t.TemplateID, t.TemplateType)
+	upStatus, refuse, err := s.upstream.GetTemplateStatus(t.TemplateID, t.TemplateType)
 	if err != nil {
 		return nil, err
 	}
@@ -1174,12 +1199,12 @@ func (s *SmsChannelService) QueryReplies(userID int64, date, taskID string, page
 	return s.smsRepo.ListRepliesByUser(userID, taskID, page, pageSize)
 }
 
-// syncRepliesByDate 按日期从联麓拉取回复并落库（归属用户按 taskId 关联发送记录）。
+// syncRepliesByDate 按日期从上游拉取回复并落库（归属用户按 taskId 关联发送记录）。
 func (s *SmsChannelService) syncRepliesByDate(date string) {
-	if !s.shlianluAvailable() {
+	if !s.upstreamAvailable() {
 		return
 	}
-	items, err := s.shlianlu.PullReply(date, 1, 100)
+	items, err := s.upstream.PullReply(date, 1, 100)
 	if err != nil {
 		log.Printf("拉取短信回复失败 [date=%s]: %v", date, err)
 		return
@@ -1304,12 +1329,12 @@ func (s *SmsChannelService) ListRepliesForAdmin(page, pageSize int) ([]*reposito
 	return s.smsRepo.ListAllReplies(page, pageSize)
 }
 
-// PullReport 按上游任务ID（taskId）从联麓拉取回执明细（下游查询回执用）。
+// PullReport 按上游任务ID（taskId）从上游拉取回执明细（下游查询回执用）。
 func (s *SmsChannelService) PullReport(taskId string, pageNo, pageSize int) ([]upstream.SmsReportItem, error) {
-	if !s.shlianluAvailable() {
+	if !s.upstreamAvailable() {
 		return nil, fmt.Errorf("短信通道未配置")
 	}
-	return s.shlianlu.PullReport(taskId, pageNo, pageSize)
+	return s.upstream.PullReport(taskId, pageNo, pageSize)
 }
 
 // PullReportForUser 下游查询回执：先校验 taskId 归属本账号（发送记录 user_id 一致）再拉取，

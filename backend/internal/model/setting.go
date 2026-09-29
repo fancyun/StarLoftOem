@@ -9,11 +9,11 @@ func (Setting) TableName() string { return SysDB + ".setting" }
 
 // 配置分组
 const (
-	SettingCategoryFinAuth  = "finauth"  // 下游实名/人脸核验（FinAuth）
-	SettingCategoryTencent  = "tencent"  // 腾讯云账号密钥（验证码/短信/人脸核身）
+	SettingCategoryStarLoft = "starloft" // 上游 StarLoft 平台（唯一上游：短信/人脸核验/系统验证码短信/账户实名）
+	SettingCategoryTencent  = "tencent"  // 腾讯云账号密钥（验证码/人脸核身/OCR）
 	SettingCategoryAlipay   = "alipay"   // 支付宝支付
 	SettingCategoryWechat   = "wechat"   // 微信支付
-	SettingCategorySMS      = "sms"      // 短信业务（联麓等）
+	SettingCategorySMS      = "sms"      // 短信业务（平台验证码短信签名/模板）
 	SettingCategoryKYC      = "kyc"      // 账户实名单价（平台账户能力，由平台承担成本）
 	SettingCategoryPayment  = "payment"  // 支付风控（在线支付单日限额等）
 	SettingCategoryAff      = "aff"      // 推广分佣（提成规则）
