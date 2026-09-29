@@ -1,11 +1,59 @@
-# StarLoft 星楼网络 · 综合云服务平台
+# OEM 经销商系统（基于 StarLoft 代码基线）
 
-[![Version](https://img.shields.io/badge/version-v1.25.2-blue.svg)](https://github.com/fancyun/StarLoft)
+[![Version](https://img.shields.io/badge/version-v1.0.0-blue.svg)](https://github.com/fancyun/StarLoftOem)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/go-1.20+-00ADD8.svg)](https://golang.org/)
 [![Docker](https://img.shields.io/badge/docker-20.10+-2496ED.svg)](https://www.docker.com/)
 
-**星楼网络** 是一个综合云服务平台（对标腾讯云 / 阿里云架构）：平台门户 + 独立产品（人脸核验、短信服务等）+ 统一控制台与账户系统。当前已上线**人脸核验（FV）**产品（有源 fv_auth / 无源 fv_self）与**短信服务（SMS）**，提供 API 调用、资源包计费与 PHP 插件对接。
+**OEM 经销商系统**：以 **StarLoft 平台开放 API（`/v1/sms`、`/v1/fv`）为唯一上游**的独立云服务系统。
+它与 StarLoft 平台共用同一套代码基线，但**不直连真实上游供应商**：短信、人脸核验、系统验证码短信、
+账户实名扫脸全部经 StarLoft 平台转售；企业工商四要素核验保留腾讯云并新增阿里云通道；
+人机验证码支持腾讯天御 / 极验 / 阿里云三通道切换；品牌与站点域名全部由后台配置下发。
+
+---
+
+## 🧭 OEM 系统说明（与 StarLoft 平台的差异）
+
+### 上游对接
+
+| 能力 | 上游 | 说明 |
+| --- | --- | --- |
+| 短信产品（签名/模板/发送/回执/回复） | StarLoft 平台 `/v1/sms/*` | 鉴权 `X-Api-Key` + `X-Sign`(HMAC-SHA256 原始请求体) |
+| 人脸核验产品（有源/无源、结果、活体图、媒体） | StarLoft 平台 `/v1/fv/*` | 承接页跳转到平台承接页完成核身 |
+| 系统验证码短信 | StarLoft 平台 `/v1/sms/send` | 需在平台侧报备验证码签名与模板，后台填其签名内容与模板 ID |
+| 账户实名扫脸（kyc / kyb 法人） | StarLoft 平台 `/v1/fv/*` | 后台 `FACE_PROVIDER=tencent` 时可回落腾讯云人脸核身 |
+| 企业工商四要素核验 | 腾讯云 OCR（默认）/ 阿里云云市场 | 后台 `ENTERPRISE_VERIFY_PROVIDER` 切换 |
+| 人机验证码 | 腾讯天御（默认）/ 极验 / 阿里云 | 后台 `CAPTCHA_PROVIDER` 切换 |
+
+### 部署前提（务必先准备）
+
+1. 在 **StarLoft 平台**注册一个账号，并完成实名：**短信相关需个人实名**、**人脸核验相关需企业实名**。
+2. 在该账号下创建 **API 密钥**，权限勾选 `all`（或至少覆盖 `fv_*` 与 `sms_*` 端点），
+   并把 Key/Secret 填入本系统 `.env` 的 `STARLOFT_API_KEY` / `STARLOFT_API_SECRET`。
+3. 在平台侧报备一条**验证码短信签名与模板**，把签名内容与模板 ID 填入后台
+   「系统设置 → 短信服务」的 `PLATFORM_SMS_SIGN` / `PLATFORM_SMS_TEMPLATE_ID`。
+4. 在后台「系统设置 → 品牌与域名」填写 OEM 自有品牌名、公司主体、备案号与**站点主域**（`BRAND_ROOT_DOMAIN`），
+   并据此配置对外 Nginx（各站点域名 = `www./console./api./img./service.<主域>`）。
+5. 平台侧「系统设置 → 短信服务」的 `SMS_STATUS_NOTIFY_URL` 需填本系统的回调地址
+   `https://api.<主域>/v1/callback/starloft/sms-status`，用于接收签名/模板审核状态推送。
+
+### 回调地址（需在平台上登记或由本系统自动上送）
+
+| 用途 | 本系统地址 |
+| --- | --- |
+| 人脸核验结果推送 | `https://api.<主域>/v1/callback/starloft/fv` |
+| 短信回执 / 回复推送 | `https://api.<主域>/v1/callback/starloft/sms-report`、`/sms-reply` |
+| 签名 / 模板审核状态推送 | `https://api.<主域>/v1/callback/starloft/sms-status` |
+
+上游推送一律按平台密钥对做 HMAC-SHA256 验签，校验失败即丢弃，不会改写本地状态。
+
+### 已知差异与限制
+
+- **人脸核验承接页在 StarLoft 平台域名下**：用户完成核身的页面由上游提供，OEM 最终用户会看到上游域名。
+  本系统承接页会把用户 302 跳转到上游承接页（基址由 `/console/config` 的 `fv_upstream_base` 下发）。
+- **短信模板重命名/改绑签名不会同步到上游**：平台开放 API 仅支持修改模板内容。
+- **验证码短信用途固定**：仅用于注册/登录/改密的验证码下发，不产生本地发送记录。
+- 协议类**法律文本**（用户协议、隐私政策等）为静态文档，需由 OEM 自行按其主体信息替换。
 
 ---
 
@@ -27,12 +75,15 @@
 ## 🏗️ 平台架构
 
 ```
-www.starloft.cn      门户站点（frontend-portal / frontend-service）：平台首页、产品页、文档中心、FV承接页
-console.starloft.cn  控制台（frontend-console）：登录注册、实名认证、资源包、充值、API 管理
-admin.starloft.cn    管理后台（frontend-admin）：数据统计、用户/订单/资源包管理
-service.starloft.cn  服务承接页（frontend-service）：人脸核验承接页（/fv/auth、/fv/self）
-api.starloft.cn      API 域（纯 Nginx 反代，无前端）：对外下游服务接口 /v1/*
+www.<主域>       门户站点（frontend-portal）：平台首页、产品页、文档中心
+console.<主域>   控制台（frontend-console）：登录注册、实名认证、资源包、充值、API 管理
+admin.<主域>     管理后台（frontend-admin）：数据统计、用户/订单/资源包管理
+service.<主域>   服务承接页（frontend-service）：人脸核验承接页（/fv/auth、/fv/self）
+api.<主域>       API 域（纯 Nginx 反代，无前端）：对外下游服务接口 /v1/*
 ```
+
+> 上表中 `<主域>` 由后台配置 `BRAND_ROOT_DOMAIN` 决定（默认 `oem.example.com`），改后需重启后端。
+> 容器内 Nginx 已按「平台精确域名 + 子域前缀正则」双写，任意 OEM 主域按前缀自动落到对应站点块。
 
 - 门户聚合产品入口，产品页路径为 `/product/fv`、`/product/sms`
 - 门户、控制台共用同一账户体系；登录 / 注册 / 实名认证均位于控制台
@@ -218,12 +269,10 @@ StarLoft/
 
 ## 📞 技术支持
 
-- 📧 邮箱: support@starloft.tech
-- 📖 文档: [在线文档中心](https://www.starloft.cn/docs)
-- 🐛 问题反馈: [GitHub Issues](https://github.com/fancyun/StarLoft/issues)
+- 🐛 问题反馈: [GitHub Issues](https://github.com/fancyun/StarLoftOem/issues)
+- 🔗 上游平台（StarLoft）开放 API 文档: `https://www.<上游主域>/docs/api-v1`
 
 ---
 
-**版本**: v1.25.2
+**版本**: v1.0.0
 **更新日期**: 2026-09-29
-**开发团队**: StarLoft Tech Team
