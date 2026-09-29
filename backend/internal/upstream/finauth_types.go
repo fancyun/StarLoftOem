@@ -65,44 +65,12 @@ type GetResultRequest struct {
 	BizID string // 业务流串号，必选
 }
 
-// GetResultResponse get_result 响应
+// GetResultResponse 核验结果响应
 type GetResultResponse struct {
-	RequestID     string  `json:"request_id"`
-	TimeUsed      int     `json:"time_used"`
 	ResultCode    FlexInt `json:"result_code"`
 	ResultMessage string  `json:"result_message"`
 	BizInfo       struct {
-		BizID        string `json:"biz_id"`
-		BizNo        string `json:"biz_no"`
-		BizExtraData string `json:"biz_extra_data"`
+		BizID string `json:"biz_id"`
+		BizNo string `json:"biz_no"`
 	} `json:"biz_info"`
-	LivenessResult map[string]interface{}   `json:"liveness_result,omitempty"`
-	VerifyResult   map[string]interface{}   `json:"verify_result,omitempty"`
-	WillResult     []map[string]interface{} `json:"will_result,omitempty"`
-	Images         map[string]string        `json:"images,omitempty"`
-	Video          string                   `json:"video,omitempty"`
-	VerifyRiskInfo map[string]interface{}   `json:"verify_risk_info,omitempty"`
-	DeviceRiskInfo map[string]interface{}   `json:"device_risk_info,omitempty"`
-	ErrorMessage   string                   `json:"error_message,omitempty"`
-}
-
-// NotifyData 异步回调数据（notify_url / return_url 回调）
-// 文档: https://www.yljz.com/document/finauth-guide-docs/h5_plus_return_notify_url
-type NotifyData struct {
-	RequestID     string  `json:"request_id"`
-	TimeUsed      int     `json:"time_used"`
-	ResultCode    FlexInt `json:"result_code"`
-	ResultMessage string  `json:"result_message"`
-	BizInfo       struct {
-		BizID        string `json:"biz_id"`
-		BizNo        string `json:"biz_no"`
-		BizExtraData string `json:"biz_extra_data"`
-	} `json:"biz_info"`
-	LivenessResult map[string]interface{}   `json:"liveness_result,omitempty"`
-	VerifyResult   map[string]interface{}   `json:"verify_result,omitempty"`
-	WillResult     []map[string]interface{} `json:"will_result,omitempty"`
-	Images         map[string]string        `json:"images,omitempty"`
-	Video          string                   `json:"video,omitempty"`
-	VerifyRiskInfo map[string]interface{}   `json:"verify_risk_info,omitempty"`
-	DeviceRiskInfo map[string]interface{}   `json:"device_risk_info,omitempty"`
 }

@@ -1,13 +1,13 @@
 package handler
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"oemrpa/internal/audit"
@@ -51,56 +51,38 @@ func (h *CallbackHandler) alipay() *upstream.AlipayClient { return h.rt.Alipay()
 
 func (h *CallbackHandler) wechatPay() *upstream.WechatPayClient { return h.rt.WechatPay() }
 
-// FinAuthCallback 处理 FinAuth 异步回调（notify_url）
-// 文档: https://www.yljz.com/document/finauth-guide-docs/h5_will_plus_return_notify_url
-// POST 请求，Content-Type: application/x-www-form-urlencoded
-// 参数: data (JSON 字符串), sign (HMAC 签名)
-func (h *CallbackHandler) FinAuthCallback(c *gin.Context) {
-	// 读取原始请求体（脱敏记录：body 含签名与可能的人脸/证件数据，仅记录长度）
-	bodyBytes, _ := io.ReadAll(c.Request.Body)
-	log.Printf("收到 FinAuth 回调: Content-Type=%s, BodyLen=%d", c.GetHeader("Content-Type"), len(bodyBytes))
-
-	// 解析 form data（重置 body）
-	c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	c.Request.ParseForm()
-	data := c.PostForm("data")
-	sign := c.PostForm("sign")
-
-	if data == "" {
-		log.Printf("FinAuth 回调: 缺少 data 参数")
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "缺少 data 参数",
-		})
-		return
-	}
-
-	if sign == "" {
-		log.Printf("FinAuth 回调: 缺少 sign 参数")
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "缺少 sign 参数",
-		})
-		return
-	}
-
-	// 处理回调（data 可能含人脸图片等敏感数据，仅记录截断片段）
-	log.Printf("FinAuth 回调: DataLen=%d, SignLen=%d, DataHead=%s", len(data), len(sign), truncateStr(data, 120))
-	err := h.authService.HandleUpstreamCallback(data, sign)
+// StarLoftFvCallback 处理上游 StarLoft 平台的人脸核验结果推送（JSON，携带平台签名）。
+// 平台按发起时传入的 notify_url 回推；业务号与本平台记录的 up_biz_id 一一对应。
+// POST /v1/callback/starloft/fv
+func (h *CallbackHandler) StarLoftFvCallback(c *gin.Context) {
+	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		log.Printf("FinAuth 回调处理失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "回调处理失败",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "读取请求体失败"})
 		return
 	}
 
-	// 成功响应（必须返回 200）
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "success",
-	})
+	var payload struct {
+		BizNo string `json:"biz_no"`
+		Sign  string `json:"sign"`
+	}
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		log.Printf("StarLoft 人脸核验回调: 解析请求体失败: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请求体格式错误"})
+		return
+	}
+	if payload.Sign == "" {
+		log.Printf("StarLoft 人脸核验回调: 缺少 sign")
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "缺少 sign"})
+		return
+	}
+
+	log.Printf("收到 StarLoft 人脸核验回调: biz_no=%s body_len=%d", payload.BizNo, len(bodyBytes))
+	if err := h.authService.HandleUpstreamCallback(string(bodyBytes), payload.Sign); err != nil {
+		log.Printf("StarLoft 人脸核验回调处理失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "回调处理失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 }
 
 // AlipayCallback 处理支付宝异步通知（notify_url，RSA2 验签）
@@ -306,186 +288,196 @@ func redactFormParams(params map[string]string) string {
 	return truncateStr(strings.Join(parts, "&"), 1000)
 }
 
-// SmsReportCallback 处理联麓短信回执推送（对应平台「发送状态推送地址」）。
-// 无签名验签（联麓推送不回带签名桶）；按 taskId 关联本地发送记录并落地回执状态。
-// 推送成功判定：返回 HTTP 200 且 body 携带 llcode="0"，否则上游 30min 后循环重推（最多 5 次）。
-func (h *CallbackHandler) SmsReportCallback(c *gin.Context) {
+// StarLoftSmsReportCallback 处理上游 StarLoft 平台的短信回执推送（JSON，携带平台签名）。
+// 按 message_sid 关联本地发送记录并落地回执状态；签名校验失败一律丢弃。
+// POST /v1/callback/starloft/sms-report
+func (h *CallbackHandler) StarLoftSmsReportCallback(c *gin.Context) {
 	bodyBytes, _ := io.ReadAll(c.Request.Body)
-	log.Printf("收到短信回执推送: BodyLen=%d, BodyHead=%s", len(bodyBytes), truncateStr(string(bodyBytes), 160))
 
-	var report struct {
-		TaskId   string `json:"taskId"`
-		SeqId    string `json:"sequenceId"`
-		Phone    string `json:"phone"`
-		RespTime string `json:"resptime"`
-		RespCode string `json:"respCode"`
-		CodeDesc string `json:"codeDesc"`
-		Status   string `json:"status"`
-		Message  string `json:"message"`
-		Tag      string `json:"tag"`
+	var push struct {
+		MessageSid string `json:"message_sid"`
+		Phone      string `json:"phone"`
+		RespCode   string `json:"resp_code"`
+		CodeDesc   string `json:"code_desc"`
+		RespTime   string `json:"resp_time"`
+		SequenceID string `json:"sequence_id"`
 	}
-	if err := json.Unmarshal(bodyBytes, &report); err != nil {
+	if err := json.Unmarshal(bodyBytes, &push); err != nil {
 		log.Printf("短信回执推送: 解析 body 失败: %v", err)
-		c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 		return
 	}
-	if report.TaskId == "" {
-		log.Printf("短信回执推送: 缺少 taskId，忽略")
-		c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
+
+	verifier := h.rt.SmsPushVerifier()
+	if verifier == nil || !verifier.VerifySmsReceiptSign(bodyBytes) {
+		log.Printf("短信回执推送: 签名校验失败，丢弃 message_sid=%s", push.MessageSid)
+		logstore.RecordSysCall("callback", "starloft-sms-report", push.MessageSid, 0, "",
+			upstream.RedactPayload(bodyBytes), "signature verification failed", 0)
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 		return
 	}
-	logstore.RecordSysCall("callback", "sms-report", report.TaskId, 0, report.SeqId, "",
-		fmt.Sprintf("phone=%s respCode=%s codeDesc=%s status=%s respTime=%s", maskPhone(report.Phone), report.RespCode, report.CodeDesc, report.Status, report.RespTime), 1)
+	if push.MessageSid == "" {
+		log.Printf("短信回执推送: 缺少 message_sid，忽略")
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
+		return
+	}
+	logstore.RecordSysCall("callback", "starloft-sms-report", push.MessageSid, 0, push.SequenceID,
+		upstream.RedactPayload(bodyBytes),
+		fmt.Sprintf("phone=%s respCode=%s codeDesc=%s respTime=%s", maskPhone(push.Phone), push.RespCode, push.CodeDesc, push.RespTime), 1)
 
 	if h.smsService == nil {
-		log.Printf("短信回执推送: 短信服务未配置，忽略 taskId=%s", report.TaskId)
-		c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
+		log.Printf("短信回执推送: 短信服务未配置，忽略 message_sid=%s", push.MessageSid)
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 		return
 	}
 
-	item := upstream.SmsReportItem{
-		SequenceId: report.SeqId,
-		Phone:      report.Phone,
-		RespTime:   report.RespTime,
-		RespCode:   report.RespCode,
-		CodeDesc:   report.CodeDesc,
+	if _, err := h.smsService.HandleSmsReportPush(upstream.SmsReportItem{
+		SequenceId: push.SequenceID,
+		Phone:      push.Phone,
+		RespTime:   push.RespTime,
+		RespCode:   push.RespCode,
+		CodeDesc:   push.CodeDesc,
+	}, push.MessageSid); err != nil {
+		log.Printf("短信回执推送落库失败: message_sid=%s, err=%v", push.MessageSid, err)
 	}
-	if _, err := h.smsService.HandleSmsReportPush(item, report.TaskId); err != nil {
-		log.Printf("短信回执推送落库失败: taskId=%s, err=%v", report.TaskId, err)
-		// 落库失败也返回 llcode=0 防重推（重推无意义）
-	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 }
 
-// SmsSignStatusCallback 处理联麓签名状态推送（对应上游「签名状态推送地址」）。
-// 无签名验签（联麓推送不回带签名）；按 id（上游 SignId）关联本地签名并落地审核状态，
-// 未知 SignId 忽略但不报错（避免重推）。始终返回 HTTP 200。
-// POST /v1/callback/sms-sign-status
-func (h *CallbackHandler) SmsSignStatusCallback(c *gin.Context) {
+// StarLoftSmsStatusCallback 处理上游 StarLoft 平台的签名/模板审核状态推送（JSON，携带平台签名）。
+// biz_type=sign 时 record_id 为平台签名记录 ID（即本平台记录的 up_sign_id）；
+// biz_type=template 时优先取 up_id（平台报备到的上游模板 ID），为空则回落 record_id。
+// 平台状态归一为本地口径：签名 2-通过 / 3-驳回；模板 1-通过 / 2-驳回；其余（审核中）忽略不改写。
+// POST /v1/callback/starloft/sms-status
+func (h *CallbackHandler) StarLoftSmsStatusCallback(c *gin.Context) {
 	bodyBytes, _ := io.ReadAll(c.Request.Body)
-	log.Printf("收到签名状态推送: BodyLen=%d, BodyHead=%s", len(bodyBytes), truncateStr(string(bodyBytes), 160))
 
 	var push struct {
-		ProductId    string `json:"productId"`
-		Status       string `json:"status"` // 1-通过 3-驳回
-		ID           string `json:"id"`     // 上游签名 ID（SignId）
-		Title        string `json:"title"`
-		Content      string `json:"content"`
-		Type         string `json:"type"`
-		CTime        string `json:"cTime"`
-		RefuseReason string `json:"refuseReason"`
+		BizType  string `json:"biz_type"`
+		RecordID int64  `json:"record_id"`
+		UpID     string `json:"up_id"`
+		Status   int    `json:"status"`
+		Reason   string `json:"reason"`
 	}
 	if err := json.Unmarshal(bodyBytes, &push); err != nil {
-		log.Printf("签名状态推送: 解析 body 失败: %v", err)
-		c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
+		log.Printf("短信审核状态推送: 解析 body 失败: %v", err)
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 		return
 	}
-	if push.ID == "" {
-		log.Printf("签名状态推送: 缺少签名 ID，忽略")
-		c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
+
+	verifier := h.rt.SmsPushVerifier()
+	if verifier == nil || !verifier.VerifySmsStatusSign(bodyBytes) {
+		log.Printf("短信审核状态推送: 签名校验失败，丢弃 biz_type=%s record_id=%d", push.BizType, push.RecordID)
+		logstore.RecordSysCall("callback", "starloft-sms-status", "", 0, "",
+			upstream.RedactPayload(bodyBytes), "signature verification failed", 0)
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 		return
 	}
-	logstore.RecordSysCall("callback", "sms-sign-status", "", 0, push.ID, "",
-		fmt.Sprintf("signId=%s status=%s title=%s refuseReason=%s cTime=%s", push.ID, push.Status, push.Title, push.RefuseReason, push.CTime), 1)
+	logstore.RecordSysCall("callback", "starloft-sms-status", "", 0, push.UpID,
+		upstream.RedactPayload(bodyBytes),
+		fmt.Sprintf("biz_type=%s record_id=%d status=%d reason=%s", push.BizType, push.RecordID, push.Status, push.Reason), 1)
+
 	if h.smsService == nil {
-		log.Printf("签名状态推送: 短信服务未配置，忽略 signId=%s", push.ID)
-		c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
+		log.Printf("短信审核状态推送: 短信服务未配置，忽略 biz_type=%s record_id=%d", push.BizType, push.RecordID)
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 		return
 	}
-	if _, err := h.smsService.HandleSignStatusPush(push.ID, push.Status, push.RefuseReason); err != nil {
-		log.Printf("签名状态推送落库失败: signId=%s, err=%v", push.ID, err)
+
+	switch push.BizType {
+	case "sign":
+		// 平台签名状态 2-通过 / 3-驳回 → 本地口径 1-通过 / 3-驳回
+		status := ""
+		switch push.Status {
+		case 2:
+			status = "1"
+		case 3:
+			status = "3"
+		}
+		if status == "" {
+			break
+		}
+		if _, err := h.smsService.HandleSignStatusPush(strconv.FormatInt(push.RecordID, 10), status, push.Reason); err != nil {
+			log.Printf("签名状态推送落库失败: record_id=%d, err=%v", push.RecordID, err)
+		}
+	case "template":
+		// 平台模板状态 1-通过 / 2-驳回 → 本地口径 1-通过 / 3-驳回
+		status := ""
+		switch push.Status {
+		case 1:
+			status = "1"
+		case 2:
+			status = "3"
+		}
+		if status == "" {
+			break
+		}
+		upTemplateID := push.UpID
+		if upTemplateID == "" {
+			upTemplateID = strconv.FormatInt(push.RecordID, 10)
+		}
+		if _, err := h.smsService.HandleTemplateStatusPush(upTemplateID, status, push.Reason); err != nil {
+			log.Printf("模板状态推送落库失败: up_template_id=%s, err=%v", upTemplateID, err)
+		}
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 }
 
-// SmsTemplateStatusCallback 处理联麓模板状态推送（对应上游「模板状态推送地址」）。
-// 无签名验签（联麓推送不回带签名）；按 id（上游模板 ID）关联本地模板并落地审核状态，
-// 未知模板 ID 忽略但不报错（避免重推）。始终返回 HTTP 200。
-// POST /v1/callback/sms-template-status
-func (h *CallbackHandler) SmsTemplateStatusCallback(c *gin.Context) {
+// StarLoftSmsReplyCallback 处理上游 StarLoft 平台的短信上行回复推送（JSON，携带平台签名）。
+// 按 message_sid 关联发送记录归属用户并落库；发送时若提供了 notify_url 则主动推送下游。
+// 签名校验失败一律丢弃。
+// POST /v1/callback/starloft/sms-reply
+func (h *CallbackHandler) StarLoftSmsReplyCallback(c *gin.Context) {
 	bodyBytes, _ := io.ReadAll(c.Request.Body)
-	log.Printf("收到模板状态推送: BodyLen=%d, BodyHead=%s", len(bodyBytes), truncateStr(string(bodyBytes), 160))
 
 	var push struct {
-		ProductId    string `json:"productId"`
-		Status       string `json:"status"` // 1-通过 3-驳回
-		ID           string `json:"id"`     // 上游模板 ID
-		Title        string `json:"title"`
-		Content      string `json:"content"`
-		Type         string `json:"type"`
-		CTime        string `json:"cTime"`
-		RefuseReason string `json:"refuseReason"`
-	}
-	if err := json.Unmarshal(bodyBytes, &push); err != nil {
-		log.Printf("模板状态推送: 解析 body 失败: %v", err)
-		c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
-		return
-	}
-	if push.ID == "" {
-		log.Printf("模板状态推送: 缺少模板 ID，忽略")
-		c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
-		return
-	}
-	logstore.RecordSysCall("callback", "sms-template-status", "", 0, push.ID, "",
-		fmt.Sprintf("templateId=%s status=%s title=%s refuseReason=%s cTime=%s", push.ID, push.Status, push.Title, push.RefuseReason, push.CTime), 1)
-	if h.smsService == nil {
-		log.Printf("模板状态推送: 短信服务未配置，忽略 templateId=%s", push.ID)
-		c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
-		return
-	}
-	if _, err := h.smsService.HandleTemplateStatusPush(push.ID, push.Status, push.RefuseReason); err != nil {
-		log.Printf("模板状态推送落库失败: templateId=%s, err=%v", push.ID, err)
-	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
-}
-
-// SmsReplyCallback 处理联麓短信回复推送（对应上游「短信回复推送地址」）。
-// 无签名验签（联麓推送不回带签名）；按 taskId 关联发送记录归属用户并落库，
-// 发送时若提供了 notify_url 则主动推送下游；未知 taskId 忽略但不报错（避免重推）。
-// 始终返回 HTTP 200 + llcode=0（上游重推判定）。
-// POST /v1/callback/sms-reply
-func (h *CallbackHandler) SmsReplyCallback(c *gin.Context) {
-	bodyBytes, _ := io.ReadAll(c.Request.Body)
-	log.Printf("收到短信回复推送: BodyLen=%d, BodyHead=%s", len(bodyBytes), truncateStr(string(bodyBytes), 160))
-
-	var push struct {
-		TaskId      string `json:"taskId"`
+		MessageSid  string `json:"message_sid"`
 		Phone       string `json:"phone"`
-		SequenceId  string `json:"sequenceId"`
-		ContentDown string `json:"contentDown"`
-		ContentUp   string `json:"contentUp"`
+		ContentDown string `json:"content_down"`
+		ContentUp   string `json:"content_up"`
+		SequenceID  string `json:"sequence_id"`
 		Timestamp   string `json:"timestamp"`
 		Status      string `json:"status"`
 		Tag         string `json:"tag"`
 	}
 	if err := json.Unmarshal(bodyBytes, &push); err != nil {
 		log.Printf("短信回复推送: 解析 body 失败: %v", err)
-		c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 		return
 	}
-	if push.TaskId == "" {
-		log.Printf("短信回复推送: 缺少 taskId，忽略")
-		c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
+
+	verifier := h.rt.SmsPushVerifier()
+	if verifier == nil || !verifier.VerifySmsReplySign(bodyBytes) {
+		log.Printf("短信回复推送: 签名校验失败，丢弃 message_sid=%s", push.MessageSid)
+		logstore.RecordSysCall("callback", "starloft-sms-reply", push.MessageSid, 0, "",
+			upstream.RedactPayload(bodyBytes), "signature verification failed", 0)
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 		return
 	}
-	logstore.RecordSysCall("callback", "sms-reply", push.TaskId, 0, push.SequenceId, "",
-		fmt.Sprintf("phone=%s sequenceId=%s contentUp=%s contentDown=%s status=%s", maskPhone(push.Phone), push.SequenceId, push.ContentUp, push.ContentDown, push.Status), 1)
+	if push.MessageSid == "" {
+		log.Printf("短信回复推送: 缺少 message_sid，忽略")
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
+		return
+	}
+	logstore.RecordSysCall("callback", "starloft-sms-reply", push.MessageSid, 0, push.SequenceID,
+		upstream.RedactPayload(bodyBytes),
+		fmt.Sprintf("phone=%s sequence_id=%s content_up=%s content_down=%s status=%s",
+			maskPhone(push.Phone), push.SequenceID, push.ContentUp, push.ContentDown, push.Status), 1)
+
 	if h.smsService == nil {
-		log.Printf("短信回复推送: 短信服务未配置，忽略 taskId=%s", push.TaskId)
-		c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
+		log.Printf("短信回复推送: 短信服务未配置，忽略 message_sid=%s", push.MessageSid)
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 		return
 	}
 	if _, err := h.smsService.HandleReplyPush(upstream.SmsReplyItem{
-		TaskId:      push.TaskId,
+		TaskId:      push.MessageSid,
 		Phone:       push.Phone,
-		SequenceId:  push.SequenceId,
+		SequenceId:  push.SequenceID,
 		ContentDown: push.ContentDown,
 		ContentUp:   push.ContentUp,
 		Timestamp:   push.Timestamp,
 		Status:      push.Status,
 		Tag:         push.Tag,
 	}); err != nil {
-		log.Printf("短信回复推送落库失败: taskId=%s, err=%v", push.TaskId, err)
+		log.Printf("短信回复推送落库失败: message_sid=%s, err=%v", push.MessageSid, err)
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "llcode": "0", "message": "success"})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 }

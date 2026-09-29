@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -140,4 +141,21 @@ func (c *Client) call(method, path, tag, bizNo string, payload, out interface{})
 // smsNotifyURL 短信回执/回复的下游推送地址（本平台 API 域回调路由）
 func (c *Client) smsNotifyURL() string {
 	return site.Platform().APIBase() + "/v1/callback/starloft/sms-report"
+}
+
+// ServiceBase 上游平台的服务承接站点基地址：由 API 基址的子域 api. 替换为 service. 得到。
+// 基址不含 api. 子域时回落基址本身，保证「未按约定拼装子域」的部署仍可用于跳转。
+func (c *Client) ServiceBase() string {
+	if !c.Available() {
+		return ""
+	}
+	u, err := url.Parse(c.baseURL)
+	if err != nil || u.Host == "" {
+		return c.baseURL
+	}
+	if strings.HasPrefix(u.Host, "api.") {
+		u.Host = "service." + strings.TrimPrefix(u.Host, "api.")
+	}
+	u.Path = ""
+	return strings.TrimRight(u.String(), "/")
 }

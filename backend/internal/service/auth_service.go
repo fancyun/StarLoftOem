@@ -562,8 +562,9 @@ func (s *AuthService) StartFvAuth(userID, apiID int64, product, name, idCard, re
 	// 建单时不扣费：上游返回 token（接受本次核验）成功后才实际扣费，
 	// 被上游拦截/连接失败的发起不产生扣费（见下方 chargeRecordAfterUpstream）。
 
-	// 上游 return_url 指向本平台 API 域 return 回调端点：核身后先回平台校对，再 302 下游
-	siteReturn := site.Platform().APIBase() + "/v1/fv/return"
+	// 上游 return_url 指向本平台 API 域 return 回调端点，并把本平台业务号拼进查询串：
+	// 上游回跳不追加任何参数，靠 biz_no 精确定位订单后校对结果，再 302 下游
+	siteReturn := site.Platform().APIBase() + "/v1/fv/return?biz_no=" + bizNo
 	req := &upstream.GetTokenRequest{
 		ReturnURL:      siteReturn,
 		NotifyURL:      finAuthNotifyURL(),
@@ -638,17 +639,11 @@ func (s *AuthService) buildFvURL(userID int64, product, token string, expireAt i
 	return url
 }
 
-// HandleFvReturn 处理 FV 自站 return 回调：依据 biz_id/token 查订单，
-// 主动向上游 get_result 校对一次结果（复用 syncRecordResult 落地订单、通知下游），
+// HandleFvReturn 处理 FV 自站 return 回调：依据本平台业务号（biz_no，由本平台拼进 return_url 随上游回跳带回）查订单，
+// 主动向上游反查一次结果（复用 syncRecordResult 落地订单、通知下游），
 // 再返回下游 return_url 供 302 跳转（return_url 为空时回本平台承接页展示结果）。
-func (s *AuthService) HandleFvReturn(bizID, token string) (string, error) {
-	var record *model.AuthRecord
-	var err error
-	if bizID != "" {
-		record, err = s.recordRepo.GetRecordByUpBizID(bizID)
-	} else {
-		record, err = s.recordRepo.GetRecordByUpToken(token)
-	}
+func (s *AuthService) HandleFvReturn(bizNo string) (string, error) {
+	record, err := s.recordRepo.GetRecordByBizNo(bizNo)
 	if err != nil {
 		return "", fmt.Errorf("record not found: %w", err)
 	}
@@ -1447,77 +1442,85 @@ func (s *AuthService) QueryRecordResultForAdmin(recordID int64) (*model.AuthReco
 	return latest, msg, nil
 }
 
-// HandleUpstreamCallback 处理上游异步回调
-// data: JSON 字符串，sign: HMAC 签名
+// HandleUpstreamCallback 处理上游（StarLoft 平台）人脸核验结果推送。
+// data 为平台推送的 JSON，sign 为平台签名；平台业务号（biz_no）即本平台记录的 up_biz_id。
 func (s *AuthService) HandleUpstreamCallback(data, sign string) error {
-	// 1. 验证签名（FinAuth 下游凭据）
+	// 1. 验证签名（平台 OpenAPI 密钥对）
 	if !s.finAuth.VerifySign(data, sign) {
-		log.Printf("回调签名验证失败: data=%s, sign=%s", data, sign)
-		logstore.RecordSysCall("callback", "finauth", "", 0, "", upstream.RedactPayload([]byte(data)),
+		log.Printf("回调签名验证失败: sign=%s", sign)
+		logstore.RecordSysCall("callback", "starloft-fv", "", 0, "", upstream.RedactPayload([]byte(data)),
 			"signature verification failed", 0)
 		return errors.New("signature verification failed")
 	}
 
 	// 2. 解析回调数据
-	var notifyData upstream.NotifyData
-	if err := json.Unmarshal([]byte(data), &notifyData); err != nil {
-		log.Printf("解析回调数据失败: %v, data=%s", err, data)
-		logstore.RecordSysCall("callback", "finauth", "", 0, "", upstream.RedactPayload([]byte(data)),
+	var notify struct {
+		BizNo         string `json:"biz_no"`
+		Status        int    `json:"status"`
+		ResultCode    string `json:"result_code"`
+		ResultMessage string `json:"result_message"`
+	}
+	if err := json.Unmarshal([]byte(data), &notify); err != nil {
+		log.Printf("解析回调数据失败: %v", err)
+		logstore.RecordSysCall("callback", "starloft-fv", "", 0, "", upstream.RedactPayload([]byte(data)),
 			fmt.Sprintf("parse failed: %v", err), 0)
 		return fmt.Errorf("parse notify data failed: %w", err)
 	}
 
-	// 2.1 记录回调原文（脱敏）到 syscall.log：biz_no/biz_id 可 join，result_code 即上游结论，
-	// 这是「结果由回调落地」这条链路唯一的复现依据（此前只记了方法/路径/状态码，无法复盘）
-	logstore.RecordSysCall("callback", "finauth", notifyData.BizInfo.BizNo, 0, notifyData.BizInfo.BizID,
+	// 2.1 记录回调原文（脱敏）到 syscall.log：biz_no 可 join，平台状态与结果码即上游结论
+	logstore.RecordSysCall("callback", "starloft-fv", notify.BizNo, 0, "",
 		upstream.RedactPayload([]byte(data)),
-		fmt.Sprintf("result_code=%d result_message=%s", notifyData.ResultCode, notifyData.ResultMessage), 1)
+		fmt.Sprintf("status=%d result_code=%s result_message=%s", notify.Status, notify.ResultCode, notify.ResultMessage), 1)
 
-	// 3. 根据 biz_id 查找认证记录（人脸核验订单库）
-	record, err := s.recordRepo.GetRecordByUpBizID(notifyData.BizInfo.BizID)
+	// 3. 按平台业务号查找认证记录（人脸核验订单库）
+	record, err := s.recordRepo.GetRecordByUpBizID(notify.BizNo)
 	if err != nil {
-		log.Printf("查找认证记录失败 [biz_id=%s]: %v", notifyData.BizInfo.BizID, err)
+		log.Printf("查找认证记录失败 [up_biz_id=%s]: %v", notify.BizNo, err)
 		return fmt.Errorf("record not found: %w", err)
 	}
 
-	// 未开始/进行中：认证尚未完结，忽略本次回调，保持「认证中」
-	if isInProgressMessage(notifyData.ResultMessage) {
-		log.Printf("回调表示认证尚未开始或进行中，忽略 [biz_id=%s, result_message=%s]", notifyData.BizInfo.BizID, notifyData.ResultMessage)
+	// 平台仍在进行中：认证尚未完结，忽略本次回调，保持「认证中」
+	if notify.Status == model.AuthStatusPending || notify.Status == model.AuthStatusProcessing {
+		log.Printf("回调表示认证仍在进行中，忽略 [up_biz_id=%s]", notify.BizNo)
 		return nil
 	}
 
 	// 终态订单忽略回调重放：不降级状态、不刷新 finished_at、不重复退款/通知
 	if isTerminalStatus(record.Status) {
-		log.Printf("订单已是终态，忽略回调 [biz_id=%s, status=%d, result_code=%d]", notifyData.BizInfo.BizID, record.Status, notifyData.ResultCode)
+		log.Printf("订单已是终态，忽略回调 [record_id=%d, status=%d]", record.ID, record.Status)
 		return nil
 	}
 
-	// 4. 判断认证结果
-	status := record.Status
-	switch notifyData.ResultCode {
-	case 1000:
-		status = 2 // 认证成功
-	case 2000, 3000, 4000:
-		status = 3 // 认证失败（计费）
-	case 6000, 6100:
-		status = 3 // 认证失败（不计费）
-	default:
-		status = 3
+	// 平台「超时结束」：核身未完成且结果不可取回，按不计费终结并退款，不给下游发失败结论
+	if notify.Status == model.AuthStatusTimeout {
+		s.finalizeNotChargeable(record, "callback", model.AuthStatusTimeout, model.ResultCodeDataDestroyed,
+			"上游核身结果已不可取回（可查询次数或有效期已用尽），未完成核身", "认证数据销毁退款")
+		return nil
 	}
 
-	resultCode := fmt.Sprintf("%d", notifyData.ResultCode)
-	err = s.recordRepoOf(record).UpdateRecordResult(record.ID, resultCode, notifyData.ResultMessage, status)
+	// 4. 判断认证结果：结果码口径与上游一致（1000 成功；2000/3000/4000 失败计费；6000/6100 失败不计费）
+	code := resultCodeInt(notify.ResultCode)
+	if code == 0 {
+		log.Printf("回调未返回有效结果码，保持原状态 [record_id=%d, status=%d]", record.ID, notify.Status)
+		return nil
+	}
+	status := model.AuthStatusFailed
+	if code == 1000 {
+		status = model.AuthStatusSuccess
+	}
+
+	resultCode := strconv.Itoa(code)
+	err = s.recordRepoOf(record).UpdateRecordResult(record.ID, resultCode, notify.ResultMessage, status)
 	if err != nil {
 		log.Printf("更新订单结果失败 [record_id=%d]: %v", record.ID, err)
 		return fmt.Errorf("update record result failed: %w", err)
 	}
 
 	// 不计费结果（6000/6100）退还预扣余额
-	s.refundIfNotChargeable(record, "callback", int(notifyData.ResultCode))
+	s.refundIfNotChargeable(record, "callback", code)
 
-	// 认证记录（下游 API 调用）结果只落在 oem_fv.auth_record；
-	// 账户实名记录（kyc）由 syncKycRecordResult 依据腾讯云人脸核身结果单独落地，不回写
-	if status == 2 {
+	// 认证记录（下游 API 调用）结果只落在 oem_fv.auth_record
+	if status == model.AuthStatusSuccess {
 		// 认证成功后自动下载保存照片与视频（30 天，供下游 API 下载）
 		s.saveRecordMedia(record)
 	}
@@ -1525,13 +1528,22 @@ func (s *AuthService) HandleUpstreamCallback(data, sign string) error {
 	// 通知下游
 	record.Status = status
 	record.ResultCode = resultCode
-	record.ResultMessage = notifyData.ResultMessage
+	record.ResultMessage = notify.ResultMessage
 	s.NotifyDownstream(record)
 
-	audit.AuthRecord("record_land", "callback", record, audit.KV("result_message", notifyData.ResultMessage))
+	audit.AuthRecord("record_land", "callback", record, audit.KV("result_message", notify.ResultMessage))
 
-	log.Printf("回调处理成功 [biz_id=%s, result_code=%d]", notifyData.BizInfo.BizID, notifyData.ResultCode)
+	log.Printf("回调处理成功 [up_biz_id=%s, result_code=%s]", notify.BizNo, resultCode)
 	return nil
+}
+
+// resultCodeInt 解析上游结果码文本（非数字返回 0，交由调用方按「无有效结果码」处理）
+func resultCodeInt(code string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(code))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // NotifyDownstream 通知下游：将认证结果 POST 到下游的 notify_url（携带 HMAC 签名，供下游校验防伪造）

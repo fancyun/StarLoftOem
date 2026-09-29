@@ -45,10 +45,11 @@ func (h *PublicHandler) GetPublicConfig(c *gin.Context) {
 		"message": "success",
 		"data": gin.H{
 			"captcha_app_id":   h.rt.CaptchaAppID(),
-			"fv_auth_price":    h.rt.FvAuthPrice(), // 下游有源人脸核验单价（前端展示用）
-			"fv_self_price":    h.rt.FvSelfPrice(), // 下游无源人脸核验单价（前端展示用）
-			"payment_channels": channels,           // 已启用的在线支付渠道
-			"contact":          h.contact(),        // 客服联系方式（门户首页展示）
+			"fv_auth_price":    h.rt.FvAuthPrice(),    // 下游有源人脸核验单价（前端展示用）
+			"fv_self_price":    h.rt.FvSelfPrice(),    // 下游无源人脸核验单价（前端展示用）
+			"fv_upstream_base": h.rt.UpstreamFvBase(), // 上游平台人脸核验承接页基址（承接页据此拼接 /auth|/self 跳转）
+			"payment_channels": channels,              // 已启用的在线支付渠道
+			"contact":          h.contact(),           // 客服联系方式（门户首页展示）
 		},
 	})
 }

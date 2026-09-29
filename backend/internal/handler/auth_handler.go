@@ -289,12 +289,11 @@ func authExpiredIn(record *model.AuthRecord) int {
 }
 
 // HandleFvReturn 处理 FV 自站 return 回调（公开端点，无需 API Key）
-// 接收上游核身完成后携带的 biz_id/token，主动向上游校对一次，再 302 到下游 return_url
+// 接收回跳带回的本平台业务号（biz_no，由发起时拼进 return_url），主动向上游校对一次，再 302 到下游 return_url
 func (h *AuthHandler) HandleFvReturn(c *gin.Context) {
-	bizID := c.Query("biz_id")
-	token := c.Query("token")
+	bizNo := c.Query("biz_no")
 
-	redirect, err := h.authService.HandleFvReturn(bizID, token)
+	redirect, err := h.authService.HandleFvReturn(bizNo)
 	if err != nil {
 		log.Printf("FV return 处理失败: +%v", err)
 		c.Redirect(http.StatusFound, site.Platform().ServiceBase())

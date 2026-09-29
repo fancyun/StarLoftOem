@@ -499,17 +499,13 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 		// 回调接口（无需认证，按来源 IP 白名单校验：CALLBACK_TRUST_IPS，未配置时放行）
 		callback := api.Group("/callback", middleware.CallbackGuard(cfg.CallbackTrustIPs))
 		{
-			callback.POST("/finauth", callbackHandler.FinAuthCallback)
 			callback.POST("/alipay", callbackHandler.AlipayCallback)
 			callback.POST("/wechat", callbackHandler.WechatCallback)
-			// 短信回执推送（联麓「发送状态推送地址」，无签名验签，返回 llcode=0 防重推）
-			callback.POST("/sms-report", callbackHandler.SmsReportCallback)
-			// 短信签名状态推送（联麓「签名状态推送地址」，无签名验签）
-			callback.POST("/sms-sign-status", callbackHandler.SmsSignStatusCallback)
-			// 短信模板状态推送（联麓「模板状态推送地址」，无签名验签）
-			callback.POST("/sms-template-status", callbackHandler.SmsTemplateStatusCallback)
-			// 短信回复推送（联麓「短信回复推送地址」，无签名验签，返回 llcode=0 防重推）
-			callback.POST("/sms-reply", callbackHandler.SmsReplyCallback)
+			// 上游 StarLoft 平台推送（JSON + 平台密钥对签名，校验失败一律丢弃）
+			callback.POST("/starloft/fv", callbackHandler.StarLoftFvCallback)               // 人脸核验结果
+			callback.POST("/starloft/sms-report", callbackHandler.StarLoftSmsReportCallback) // 短信回执
+			callback.POST("/starloft/sms-reply", callbackHandler.StarLoftSmsReplyCallback)   // 短信上行回复
+			callback.POST("/starloft/sms-status", callbackHandler.StarLoftSmsStatusCallback) // 签名/模板审核状态
 		}
 	}
 

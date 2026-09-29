@@ -35,3 +35,11 @@ type EnterpriseVerifyResult struct {
 type EnterpriseVerifier interface {
 	Verify(companyName, creditCode, legalName, legalIDCard string) (*EnterpriseVerifyResult, error)
 }
+
+// SmsPushVerifier 上游短信推送（回执/回复/签名与模板状态）的签名校验器：
+// 校验失败时业务侧一律丢弃该次推送，防止伪造回调改写发送状态。
+type SmsPushVerifier interface {
+	VerifySmsReceiptSign(body []byte) bool
+	VerifySmsReplySign(body []byte) bool
+	VerifySmsStatusSign(body []byte) bool
+}

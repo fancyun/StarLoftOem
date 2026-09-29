@@ -29,6 +29,8 @@ type snapshot struct {
 	faceProvider upstream.FaceProvider
 	// enterpriseVerifier 企业工商四要素核验 provider（腾讯云 OCR / 阿里云可切换）
 	enterpriseVerifier upstream.EnterpriseVerifier
+	// smsPushVerifier 上游短信推送（回执/回复/签名与模板状态）签名校验器
+	smsPushVerifier upstream.SmsPushVerifier
 
 	alipay       *upstream.AlipayClient
 	wechatPay    *upstream.WechatPayClient
@@ -56,6 +58,7 @@ func New(cfg *config.Config) (*Runtime, error) {
 	}
 	s.finAuth = s.starLoft
 	s.smsUpstream = s.starLoft
+	s.smsPushVerifier = s.starLoft
 
 	// 账户实名人脸核身 provider：默认走上游 StarLoft 平台；配置为 tencent 时回落腾讯云人脸核身
 	if cfg.FaceProvider == config.FaceProviderTencent {
@@ -171,6 +174,28 @@ func (rt *Runtime) EnterpriseVerifier() upstream.EnterpriseVerifier {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
 	return rt.snp.enterpriseVerifier
+}
+
+// UpstreamFvBase 返回上游平台人脸核验承接页基址（{service 站点}/service/fv）：
+// 承接页据此拼接 {基址}/{auth|self}?token=... 跳转到平台完成核身；上游未配置时返回空串。
+func (rt *Runtime) UpstreamFvBase() string {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	if rt.snp.starLoft == nil {
+		return ""
+	}
+	base := rt.snp.starLoft.ServiceBase()
+	if base == "" {
+		return ""
+	}
+	return base + "/service/fv"
+}
+
+// SmsPushVerifier 返回上游短信推送签名校验器（未配置时为 nil）。
+func (rt *Runtime) SmsPushVerifier() upstream.SmsPushVerifier {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return rt.snp.smsPushVerifier
 }
 
 // Alipay 返回当前生效的支付宝客户端（未配置时为 nil）。

@@ -102,7 +102,7 @@ document.title = `${brandName} · 人脸核验`
  * 关于 URL 参数名（前后端契约约定，此处集中定义，便于统一）：
  *   mode       — 核身模式：auth（有源，人脸+公安库比对）/ self（无源，人脸与本人留底比对）。
  *                优先取路由段 :mode，其次取 query 的 mode。
- *   token      — 上游核身令牌（用于拼装上游链接 https://api.yljz.com/finauth/lite/do?token=xxx）
+ *   token      — 上游核身令牌（用于拼装上游链接 {上游承接页基址}/{auth|self}?token=xxx）
  *   biz_no     — 平台业务单号（仅展示用）
  *   k          — 备用/签名扩展参数（预留透传）
  *   return_ref — 后端生成的核身完成后的最终回跳地址（GET 方式跳转）
@@ -118,8 +118,12 @@ const QUERY_KEYS = {
   expireAt: 'expire_at'
 } as const
 
-/** 上游核身地址模板（token 已注入，QR 与移动端跳转共用） */
-const UPSTREAM_BASE = 'https://api.yljz.com/finauth/lite/do'
+/**
+ * 上游核身承接页基址：由后端公开配置 /console/config 的 fv_upstream_base 下发
+ * （形如 https://service.example.com/service/fv），页面按其模式拼接 /auth 或 /self。
+ * 未取到时保持空串，页面提示核身通道不可用，避免误跳外部站点。
+ */
+const upstreamBase = ref('')
 
 // 模式取路由段 + query 兜底
 const props = defineProps<{ mode: string }>()
@@ -134,8 +138,20 @@ const bizNo = computed(() => (route.query as Record<string, unknown>)[QUERY_KEYS
 const returnRef = computed(() => (route.query as Record<string, unknown>)[QUERY_KEYS.returnRef] as string | undefined)
 
 const upstreamUrl = computed(() => {
-  if (!token.value) return ''
-  return `${UPSTREAM_BASE}?token=${encodeURIComponent(token.value)}`
+  if (!token.value || !upstreamBase.value || !runMode.value) return ''
+  return `${upstreamBase.value}/${runMode.value}?token=${encodeURIComponent(token.value)}`
+})
+
+// 拉取公开配置，取得上游核身承接页基址
+onMounted(async () => {
+  try {
+    const res = await fetch('/console/config')
+    const json = await res.json()
+    const base = json?.data?.fv_upstream_base
+    if (typeof base === 'string' && base) upstreamBase.value = base
+  } catch {
+    // 取不到配置时保持空串，由页面提示核身通道不可用
+  }
 })
 
 /** 是否移动端（UA 判断） */
@@ -154,6 +170,7 @@ const modeLabel = computed(() => {
 const errorMsg = computed(() => {
   if (!runMode.value) return '缺少有效的核身模式参数（mode=auth|self）。'
   if (!token.value) return '缺少核身令牌（token）参数，请联系服务方重新发起。'
+  if (!upstreamBase.value) return '核身通道未配置（上游平台基址缺失），请联系服务方。'
   return ''
 })
 
