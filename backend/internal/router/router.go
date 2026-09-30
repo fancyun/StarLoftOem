@@ -258,11 +258,14 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 		console.POST("/register", userHandler.Register)
 		console.POST("/login", userHandler.Login)
 
-		// 微信一键登录（手机端公众号网页授权 / PC 开放平台扫码）：登录前可调；ticket/bind 限流防刷
+		// 微信一键登录（手机端公众号网页授权 / PC 扫码）：登录前可调；ticket/bind/扫码接口限流防刷
 		console.GET("/wechat/authorize", wechatLoginHandler.WechatAuthorize)
 		console.GET("/wechat/callback", wechatLoginHandler.WechatCallback)
 		console.POST("/wechat/ticket", middleware.RateLimiterForIP(10), wechatLoginHandler.WechatTicket)
 		console.POST("/wechat/bind", middleware.RateLimiterForIP(10), wechatLoginHandler.WechatBind)
+		// PC 扫码登录（自建二维码 + 轮询）：独立限流键，避免轮询消耗同 IP 的登录/发码预算
+		console.POST("/wechat/qr-session", middleware.RateLimiterForIPKey("wechat_qr_session", 30), wechatLoginHandler.WechatQRSession)
+		console.POST("/wechat/qr-poll", middleware.RateLimiterForIPKey("wechat_qr_poll", 200), wechatLoginHandler.WechatQRPoll)
 
 		// 需要JWT认证的路由
 		auth := console.Group("", middleware.JWTAuth(cfg.JWT.Secret))
@@ -292,6 +295,7 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 			auth.GET("/wechat/binding", wechatLoginHandler.WechatBinding)
 			auth.GET("/wechat/bind-authorize", wechatLoginHandler.WechatBindAuthorize)
 			auth.DELETE("/wechat/binding", wechatLoginHandler.WechatUnbind)
+			auth.POST("/wechat/qr-bind-session", middleware.RateLimiterForIPKey("wechat_qr_bind", 30), wechatLoginHandler.WechatQRBindSession)
 			// 人脸核验（Web 用户发起，返回自站链接）
 			auth.POST("/fv", authHandler.StartFvAuthForWeb)
 			// 短信签名提交（Web 用户）

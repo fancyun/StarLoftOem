@@ -29,6 +29,12 @@ const routes: Array<RouteRecordRaw> = [
     name: 'WechatBind',
     component: () => import('@/views/user/WechatBind.vue')
   },
+  // PC 扫码授权结果页（公开路由）：扫码后在微信内置浏览器打开，只做结果展示、不换取票据
+  {
+    path: '/wechat/scan',
+    name: 'WechatScan',
+    component: () => import('@/views/user/WechatScan.vue')
+  },
   // 控制台（需登录）
   {
     path: '/',

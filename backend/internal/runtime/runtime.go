@@ -34,7 +34,7 @@ type snapshot struct {
 
 	alipay    *upstream.AlipayClient
 	wechatPay *upstream.WechatPayClient
-	// wechatOAuth 微信一键登录（手机端公众号网页授权 / PC 开放平台扫码）
+	// wechatOAuth 微信一键登录（公众号网页授权：手机端页面内授权 / PC 扫码授权）
 	wechatOAuth *upstream.WechatOAuthClient
 	sms         *service.SMSService
 	// captchaProvider 人机验证码通道（天御 / 极验 / 阿里云，按后台配置切换）
@@ -130,13 +130,11 @@ func New(cfg *config.Config) (*Runtime, error) {
 		}
 	}
 
-	// 微信一键登录（公众号网页授权 + 开放平台扫码）：开关启用且至少配置一套 AppID 时构建；
-	// 具体场景是否可用由客户端按各端 AppID/AppSecret 是否齐备判定
-	if config.PaymentChannelEnabled(cfg.WechatLogin.Enabled) &&
-		(cfg.WechatLogin.MPAppID != "" || cfg.WechatLogin.OpenAppID != "") {
+	// 微信一键登录（公众号网页授权）：开关启用且已配置公众号 AppID 时构建；
+	// 凭据是否齐备由客户端 Available() 判定
+	if config.PaymentChannelEnabled(cfg.WechatLogin.Enabled) && cfg.WechatLogin.MPAppID != "" {
 		wechatOAuthClient, e := upstream.NewWechatOAuthClient(
 			cfg.WechatLogin.MPAppID, cfg.WechatLogin.MPAppSecret,
-			cfg.WechatLogin.OpenAppID, cfg.WechatLogin.OpenAppSecret,
 		)
 		if e != nil {
 			log.Printf("构建微信登录客户端失败，微信一键登录暂时不可用: %v", e)

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +24,9 @@ import (
 // 前端该路径属 SPA 路由（/console/* 会被 Nginx 反代到后端，故不能复用）。
 const wechatCallbackPath = "/console/wechat/callback"
 
+// wechatQueryScenePC 仅用于识别历史前端可能传入的 scene=pc（PC 端已改为扫码登录，页面内授权不支持）
+const wechatQueryScenePC = "pc"
+
 // Redis 键前缀与有效期：state 用于防 CSRF；ticket / bind_ticket 均为一次性凭据
 const (
 	wechatStatePrefix      = "wechat:state:"
@@ -39,7 +41,9 @@ const (
 // wechatState 授权前的会话状态（存 Redis，回调时一次性消费）
 type wechatState struct {
 	Scene      string `json:"scene"`
-	BindUserID int64  `json:"bind_user_id"` // >0 表示已登录用户在账户设置页发起绑定
+	Mode       string `json:"mode,omitempty"`       // 空=手机端登录/设置页绑定；qr=PC 扫码会话
+	BindUserID int64  `json:"bind_user_id"`         // >0 表示已登录用户在账户设置页发起绑定
+	QRSession  string `json:"qr_session,omitempty"` // mode=qr 时指向扫码会话（wechat:qr:<qr_ticket>）
 }
 
 // wechatTicket 一次性登录票据（前端凭它换 JWT，避免 token 出现在 URL/日志）
@@ -49,13 +53,14 @@ type wechatTicket struct {
 
 // wechatBindTicket 未绑定时的一次性绑定票据（携带本次授权取得的微信标识）
 type wechatBindTicket struct {
-	Scene    string `json:"scene"`
-	OpenID   string `json:"openid"`
-	UnionID  string `json:"unionid"`
-	Nickname string `json:"nickname"`
+	Scene     string `json:"scene"`
+	OpenID    string `json:"openid"`
+	UnionID   string `json:"unionid"`
+	Nickname  string `json:"nickname"`
+	QRSession string `json:"qr_session,omitempty"` // 非空表示 PC 扫码会话发起，绑定成功后回写该会话
 }
 
-// WechatLoginHandler 微信一键登录（手机端公众号网页授权 / PC 开放平台扫码）
+// WechatLoginHandler 微信一键登录（公众号网页授权：手机端页面内授权 / PC 扫码授权）
 type WechatLoginHandler struct {
 	rt           *runtime.Runtime
 	userRepo     *repository.UserRepository
@@ -80,17 +85,26 @@ func NewWechatLoginHandler(
 	}
 }
 
-// WechatAuthorize 发起微信登录：生成一次性 state 后返回微信授权地址（前端跳转）。
+// WechatAuthorize 发起微信登录：生成一次性 state 后返回公众号授权地址（仅在微信内置浏览器内打开有效）。
 func (h *WechatLoginHandler) WechatAuthorize(c *gin.Context) {
-	h.authorize(c, resolveWechatScene(c, c.Query("scene")), 0)
+	if c.Query("scene") == wechatQueryScenePC {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": "PC 端请使用扫码登录"})
+		return
+	}
+	h.authorize(c, 0)
 }
 
 // WechatBindAuthorize 已登录用户发起微信绑定：state 记录 userID，回调时直接写绑定（不签发登录态）。
 func (h *WechatLoginHandler) WechatBindAuthorize(c *gin.Context) {
-	h.authorize(c, resolveWechatScene(c, c.Query("scene")), c.GetInt64("user_id"))
+	if c.Query("scene") == wechatQueryScenePC {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": "PC 端请在绑定弹层中扫码"})
+		return
+	}
+	h.authorize(c, c.GetInt64("user_id"))
 }
 
-// WechatCallback 微信授权回跳：校验 state 后换取微信标识，按绑定情况 302 到前端中转页。
+// WechatCallback 微信授权回跳：校验 state 后换取微信标识。
+// mode=qr 分流到扫码会话（手机侧只授权、不签发登录态）；其余按原逻辑 302 到前端中转页。
 func (h *WechatLoginHandler) WechatCallback(c *gin.Context) {
 	consoleBase := site.Platform().ConsoleBase()
 
@@ -109,15 +123,20 @@ func (h *WechatLoginHandler) WechatCallback(c *gin.Context) {
 		return
 	}
 
+	if st.Mode == wechatModeQR {
+		h.handleQRCallback(c, &st)
+		return
+	}
+
 	cli := h.rt.WechatOAuth()
 	code := c.Query("code")
-	if code == "" || cli == nil || !cli.Available(st.Scene) {
+	if code == "" || cli == nil || !cli.Available() {
 		c.Redirect(http.StatusFound, consoleBase+"/login?wechat=failed")
 		return
 	}
-	wu, err := cli.ExchangeCode(st.Scene, code)
+	wu, err := cli.ExchangeCode(code)
 	if err != nil {
-		log.Printf("微信登录换取用户标识失败 [scene=%s]: %v", st.Scene, err)
+		log.Printf("微信登录换取用户标识失败: %v", err)
 		c.Redirect(http.StatusFound, consoleBase+"/login?wechat=failed")
 		return
 	}
@@ -135,16 +154,14 @@ func (h *WechatLoginHandler) WechatCallback(c *gin.Context) {
 	}
 
 	// 命中已绑定账号：发一次性登录票据，由前端换取 JWT
-	unionID, mpOpenID, openOpenID := wechatLookupKeys(wu)
-	bound, err := h.userRepo.GetUserByWechat(unionID, mpOpenID, openOpenID)
+	bound, err := h.userRepo.GetUserByWechat(wu.UnionID, wu.OpenID)
 	if err != nil && !errors.Is(err, repository.ErrUserNotFound) {
 		c.Redirect(http.StatusFound, consoleBase+"/login?wechat=failed")
 		return
 	}
 	if bound != nil {
-		ticket := utils.GenerateRandomKey(24)
-		payload, _ := json.Marshal(wechatTicket{UserID: bound.ID})
-		if serr := redis.Set(wechatTicketPrefix+ticket, string(payload), wechatTicketTTL); serr != nil {
+		ticket, terr := h.issueLoginTicket(bound.ID)
+		if terr != nil {
 			c.Redirect(http.StatusFound, consoleBase+"/login?wechat=failed")
 			return
 		}
@@ -155,9 +172,8 @@ func (h *WechatLoginHandler) WechatCallback(c *gin.Context) {
 	}
 
 	// 未绑定：发一次性绑定票据，前端收集手机号与短信验证码后完成绑定登录
-	bindTicket := utils.GenerateRandomKey(24)
-	payload, _ := json.Marshal(wechatBindTicket{Scene: wu.Scene, OpenID: wu.OpenID, UnionID: wu.UnionID, Nickname: wu.Nickname})
-	if serr := redis.Set(wechatBindTicketPrefix+bindTicket, string(payload), wechatBindTicketTTL); serr != nil {
+	bindTicket, berr := h.issueBindTicket(wu, "")
+	if berr != nil {
 		c.Redirect(http.StatusFound, consoleBase+"/login?wechat=failed")
 		return
 	}
@@ -203,6 +219,7 @@ func (h *WechatLoginHandler) WechatTicket(c *gin.Context) {
 }
 
 // WechatBind 未绑定时绑定已有账号：校验手机号与短信验证码后写入绑定并签发登录态。
+// 票据携带 qr_session 时（PC 扫码会话发起）绑定成功后同步回写扫码会话。
 func (h *WechatLoginHandler) WechatBind(c *gin.Context) {
 	var req struct {
 		BindTicket string `json:"bind_ticket" binding:"required"`
@@ -247,10 +264,9 @@ func (h *WechatLoginHandler) WechatBind(c *gin.Context) {
 		return
 	}
 
-	wu := &upstream.WechatOAuthUser{OpenID: bt.OpenID, UnionID: bt.UnionID, Nickname: bt.Nickname, Scene: bt.Scene}
+	wu := &upstream.WechatOAuthUser{OpenID: bt.OpenID, UnionID: bt.UnionID, Nickname: bt.Nickname, Scene: upstream.SceneMP}
 	// 该微信已绑定到其它账号时直接拒绝（避免换绑导致原账号丢失登录方式）
-	unionID, mpOpenID, openOpenID := wechatLookupKeys(wu)
-	if other, oerr := h.userRepo.GetUserByWechat(unionID, mpOpenID, openOpenID); oerr == nil && other != nil && other.ID != user.ID {
+	if other, oerr := h.userRepo.GetUserByWechat(wu.UnionID, wu.OpenID); oerr == nil && other != nil && other.ID != user.ID {
 		c.JSON(http.StatusOK, gin.H{"code": 400, "message": "该微信已绑定其它账号，请先在该账号解绑"})
 		return
 	}
@@ -264,6 +280,11 @@ func (h *WechatLoginHandler) WechatBind(c *gin.Context) {
 	}
 	_ = redis.Del(ticketKey)
 
+	// PC 扫码会话：绑定成功后回写会话，供 PC 轮询取得登录态
+	if bt.QRSession != "" {
+		h.markQRSessionAuthorized(bt.QRSession, user.ID)
+	}
+
 	audit.Log("wechat_bind", audit.KV("user_id", user.ID), audit.KV("scene", wu.Scene),
 		audit.KV("openid", wu.OpenID), audit.KV("unionid", wu.UnionID), audit.KV("method", "sms"))
 	h.issueWechatLogin(c, user)
@@ -271,7 +292,7 @@ func (h *WechatLoginHandler) WechatBind(c *gin.Context) {
 
 // WechatBinding 查询当前登录用户的微信绑定状态
 func (h *WechatLoginHandler) WechatBinding(c *gin.Context) {
-	_, mpOpenID, openOpenID, nickname, err := h.userRepo.GetWechatBinding(c.GetInt64("user_id"))
+	_, mpOpenID, nickname, err := h.userRepo.GetWechatBinding(c.GetInt64("user_id"))
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"code": 500, "message": "读取微信绑定状态失败"})
 		return
@@ -280,52 +301,43 @@ func (h *WechatLoginHandler) WechatBinding(c *gin.Context) {
 		"code":    0,
 		"message": "success",
 		"data": gin.H{
-			"mp_bound":   mpOpenID != "",
-			"open_bound": openOpenID != "",
-			"nickname":   nickname,
+			"mp_bound": mpOpenID != "",
+			"nickname": nickname,
 		},
 	})
 }
 
-// WechatUnbind 解绑指定场景的微信（scene：mp-公众号 pc-开放平台）
+// WechatUnbind 解绑公众号微信
 func (h *WechatLoginHandler) WechatUnbind(c *gin.Context) {
 	userID := c.GetInt64("user_id")
-	scene := c.Query("scene")
-
-	var err error
-	switch scene {
-	case upstream.SceneMP:
-		err = h.userRepo.UnbindWechatMP(userID)
-	case upstream.ScenePC:
-		err = h.userRepo.UnbindWechatOpen(userID)
-	default:
+	if c.Query("scene") != upstream.SceneMP {
 		c.JSON(http.StatusOK, gin.H{"code": 400, "message": "invalid scene"})
 		return
 	}
-	if err != nil {
+	if err := h.userRepo.UnbindWechatMP(userID); err != nil {
 		c.JSON(http.StatusOK, gin.H{"code": 500, "message": "解除微信绑定失败"})
 		return
 	}
-	audit.Log("wechat_unbind", audit.KV("user_id", userID), audit.KV("scene", scene))
+	audit.Log("wechat_unbind", audit.KV("user_id", userID), audit.KV("scene", upstream.SceneMP))
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
 }
 
-// authorize 生成一次性 state 并返回微信授权地址
-func (h *WechatLoginHandler) authorize(c *gin.Context, scene string, bindUserID int64) {
+// authorize 生成一次性 state 并返回公众号授权地址（bindUserID>0 表示设置页发起绑定）
+func (h *WechatLoginHandler) authorize(c *gin.Context, bindUserID int64) {
 	cli := h.rt.WechatOAuth()
-	if cli == nil || !cli.Available(scene) {
+	if cli == nil || !cli.Available() {
 		c.JSON(http.StatusOK, gin.H{"code": 500, "message": "微信登录未配置"})
 		return
 	}
 
 	state := utils.GenerateRandomKey(16)
-	payload, _ := json.Marshal(wechatState{Scene: scene, BindUserID: bindUserID})
+	payload, _ := json.Marshal(wechatState{Scene: upstream.SceneMP, BindUserID: bindUserID})
 	if err := redis.Set(wechatStatePrefix+state, string(payload), wechatStateTTL); err != nil {
 		c.JSON(http.StatusOK, gin.H{"code": 500, "message": "微信登录初始化失败"})
 		return
 	}
 
-	authorizeURL, err := cli.AuthorizeURL(scene, site.Platform().ConsoleBase()+wechatCallbackPath, state)
+	authorizeURL, err := cli.AuthorizeURL(site.Platform().ConsoleBase()+wechatCallbackPath, state)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"code": 500, "message": "微信登录未配置"})
 		return
@@ -333,12 +345,46 @@ func (h *WechatLoginHandler) authorize(c *gin.Context, scene string, bindUserID 
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": gin.H{"authorize_url": authorizeURL}})
 }
 
-// bindWechat 按场景写入对应端的 openid（unionid/昵称有空值时保留已有值）
-func (h *WechatLoginHandler) bindWechat(userID int64, u *upstream.WechatOAuthUser) error {
-	if u.Scene == upstream.SceneMP {
-		return h.userRepo.BindWechatMP(userID, u.OpenID, u.UnionID, u.Nickname)
+// issueLoginTicket 生成一次性登录票据（前端凭它 POST 换取 JWT）
+func (h *WechatLoginHandler) issueLoginTicket(userID int64) (string, error) {
+	ticket := utils.GenerateRandomKey(24)
+	payload, _ := json.Marshal(wechatTicket{UserID: userID})
+	if err := redis.Set(wechatTicketPrefix+ticket, string(payload), wechatTicketTTL); err != nil {
+		return "", err
 	}
-	return h.userRepo.BindWechatOpen(userID, u.OpenID, u.UnionID, u.Nickname)
+	return ticket, nil
+}
+
+// issueBindTicket 生成一次性绑定票据（qrSession 非空时携带扫码会话指针）
+func (h *WechatLoginHandler) issueBindTicket(u *upstream.WechatOAuthUser, qrSession string) (string, error) {
+	bindTicket := utils.GenerateRandomKey(24)
+	payload, _ := json.Marshal(wechatBindTicket{
+		Scene: u.Scene, OpenID: u.OpenID, UnionID: u.UnionID, Nickname: u.Nickname, QRSession: qrSession,
+	})
+	if err := redis.Set(wechatBindTicketPrefix+bindTicket, string(payload), wechatBindTicketTTL); err != nil {
+		return "", err
+	}
+	return bindTicket, nil
+}
+
+// bindWechat 写入公众号 openid（unionid/昵称有空值时保留已有值）
+func (h *WechatLoginHandler) bindWechat(userID int64, u *upstream.WechatOAuthUser) error {
+	return h.userRepo.BindWechatMP(userID, u.OpenID, u.UnionID, u.Nickname)
+}
+
+// backfillWechatMP 回填公众号 openid：历史仅绑定过其它端的账号（unionid 命中）扫码后可平滑补齐本端绑定。
+// 回填失败仅记日志（不影响本次登录）。
+func (h *WechatLoginHandler) backfillWechatMP(userID int64, u *upstream.WechatOAuthUser) {
+	_, mpOpenID, _, err := h.userRepo.GetWechatBinding(userID)
+	if err != nil || mpOpenID != "" {
+		return
+	}
+	if berr := h.userRepo.BindWechatMP(userID, u.OpenID, u.UnionID, u.Nickname); berr != nil {
+		log.Printf("微信扫码回填公众号绑定失败 [user_id=%d]: %v", userID, berr)
+		return
+	}
+	audit.Log("wechat_bind", audit.KV("user_id", userID), audit.KV("scene", upstream.SceneMP),
+		audit.KV("openid", u.OpenID), audit.KV("unionid", u.UnionID), audit.KV("method", "qr_backfill"))
 }
 
 // issueWechatLogin 写登录日志（login_type=wechat）并签发 JWT
@@ -369,26 +415,4 @@ func (h *WechatLoginHandler) issueWechatLogin(c *gin.Context, user *model.User) 
 			"expire_in": 86400,
 		},
 	})
-}
-
-// resolveWechatScene 解析登录场景：auto 按 UA 是否为微信内置浏览器判定。
-// 页面内授权只能在微信内置浏览器打开，扫码只能在普通浏览器打开，两者互斥。
-func resolveWechatScene(c *gin.Context, scene string) string {
-	switch scene {
-	case upstream.SceneMP, upstream.ScenePC:
-		return scene
-	default:
-		if strings.Contains(c.GetHeader("User-Agent"), "MicroMessenger") {
-			return upstream.SceneMP
-		}
-		return upstream.ScenePC
-	}
-}
-
-// wechatLookupKeys 把授权结果映射为三列查询键：公众号 openid 与开放平台 openid 分属不同列
-func wechatLookupKeys(u *upstream.WechatOAuthUser) (unionID, mpOpenID, openOpenID string) {
-	if u.Scene == upstream.SceneMP {
-		return u.UnionID, u.OpenID, ""
-	}
-	return u.UnionID, "", u.OpenID
 }

@@ -13,7 +13,6 @@ import (
 	"oemrpa/internal/repository"
 	"oemrpa/internal/runtime"
 	"oemrpa/internal/site"
-	"oemrpa/internal/upstream"
 )
 
 type PublicHandler struct {
@@ -61,15 +60,15 @@ func (h *PublicHandler) GetPublicConfig(c *gin.Context) {
 	})
 }
 
-// wechatLogin 微信一键登录各端可用性（按各端 AppID/AppSecret 是否齐备判定，前端据此决定入口可见性）
+// wechatLogin 微信一键登录可用性（按公众号 AppID/AppSecret 是否齐备判定，前端据此决定入口可见性）。
+// 手机端页面内授权与 PC 扫码授权共用同一公众号凭据，故两者同时可用。
 func (h *PublicHandler) wechatLogin() gin.H {
 	cli := h.rt.WechatOAuth()
-	mp, open := false, false
+	mp := false
 	if cli != nil {
-		mp = cli.Available(upstream.SceneMP)
-		open = cli.Available(upstream.ScenePC)
+		mp = cli.Available()
 	}
-	return gin.H{"mp": mp, "open": open}
+	return gin.H{"mp": mp}
 }
 
 // contact 客服联系方式：实时读取系统库配置表（后台「系统设置 → 客服联系方式」维护），

@@ -79,7 +79,6 @@ func ApplySettingOverrides(cfg *Config, sys, fv, sms map[string]string) {
 	// 微信一键登录（AppSecret 为密钥类，只走 .env）
 	applyInt(&cfg.WechatLogin.Enabled, sys, "WECHAT_LOGIN_ENABLED")
 	applyString(&cfg.WechatLogin.MPAppID, sys, "WECHAT_LOGIN_MP_APP_ID")
-	applyString(&cfg.WechatLogin.OpenAppID, sys, "WECHAT_LOGIN_OPEN_APP_ID")
 
 	// 产品库平台单价（人脸核验库仅产品自身单价）
 	applyFloat(&cfg.FvAuthPrice, fv, model.ProductConfigFvAuthPrice)
@@ -210,11 +209,10 @@ func SettingCatalog() []SettingSpec {
 		{"WECHAT_MCH_ID", model.SettingCategoryWechat, "微信商户号"},
 		{"WECHAT_MCH_SERIAL_NO", model.SettingCategoryWechat, "商户 API 证书序列号"},
 
-		// 微信一键登录（手机端公众号网页授权 / PC 开放平台扫码）：AppSecret 为密钥类，只走 .env；
-		// 回跳域名须在微信后台登记为「网页授权域名」/「授权回调域」，与本站 console 域名一致
+		// 微信一键登录（公众号网页授权）：AppSecret 为密钥类，只走 .env；
+		// 回跳域名须在微信后台登记为「网页授权域名」，与本站 console 域名一致
 		{"WECHAT_LOGIN_ENABLED", model.SettingCategoryWechat, "微信一键登录启用开关：1-启用 2-不启用"},
-		{"WECHAT_LOGIN_MP_APP_ID", model.SettingCategoryWechat, "公众号 AppID（手机端网页授权一键登录；留空表示手机端不可用）"},
-		{"WECHAT_LOGIN_OPEN_APP_ID", model.SettingCategoryWechat, "开放平台网站应用 AppID（PC 扫码登录；留空表示 PC 端不可用）"},
+		{"WECHAT_LOGIN_MP_APP_ID", model.SettingCategoryWechat, "公众号 AppID（手机端网页授权与 PC 扫码登录共用；留空表示微信登录不可用）"},
 
 		// 账户实名单价（平台账户能力，成本由平台承担；人脸核验产品单价见各产品分区「产品配置」）
 		{SettingKeyKycPersonalPrice, model.SettingCategoryKYC, "个人实名免费次数用尽后单价（元/次）"},
@@ -270,7 +268,6 @@ func (cfg *Config) SettingValues() map[string]string {
 		"WECHAT_MCH_SERIAL_NO":                    cfg.WechatPay.MchSerialNo,
 		"WECHAT_LOGIN_ENABLED":                    strconv.Itoa(cfg.WechatLogin.Enabled),
 		"WECHAT_LOGIN_MP_APP_ID":                  cfg.WechatLogin.MPAppID,
-		"WECHAT_LOGIN_OPEN_APP_ID":                cfg.WechatLogin.OpenAppID,
 		SettingKeyKycPersonalPrice:                formatFloat(cfg.KycPersonalPrice),
 		SettingKeyKycEnterprisePrice:              formatFloat(cfg.KycEnterprisePrice),
 		SettingKeyPaymentDailyLimit:               formatFloat(cfg.PaymentDailyLimit),

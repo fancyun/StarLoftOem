@@ -37,36 +37,26 @@
           微信绑定
         </h3>
         <p class="section-tip">
-          绑定后可使用微信一键登录本账号。公众号（手机端）与开放平台（PC 扫码）两端可分别绑定。
+          绑定后可使用微信一键登录本账号。微信客户端内可直接授权绑定，其它环境可用微信扫码绑定。
         </p>
 
         <div class="bind-row">
           <div class="bind-info">
-            <span class="bind-name">微信公众号（手机端）</span>
+            <span class="bind-name">微信</span>
             <el-tag v-if="binding.mp_bound" type="success" size="small">已绑定</el-tag>
             <el-tag v-else type="info" size="small">未绑定</el-tag>
           </div>
           <el-button v-if="binding.mp_bound" size="small" @click="handleUnbind('mp')">解除绑定</el-button>
-          <el-button v-else size="small" type="primary" :disabled="!inWechat" @click="handleBind('mp')">
-            立即绑定
-          </el-button>
+          <el-button v-else size="small" type="primary" @click="handleBind">立即绑定</el-button>
         </div>
-        <p v-if="!binding.mp_bound && !inWechat" class="bind-note">
-          公众号绑定需在微信客户端内打开本页后操作。
+        <p v-if="!binding.mp_bound" class="bind-note">
+          微信客户端内点「立即绑定」直接授权；其它环境将展示二维码，用微信扫码后完成绑定。
         </p>
-
-        <div class="bind-row">
-          <div class="bind-info">
-            <span class="bind-name">微信开放平台（PC 扫码）</span>
-            <el-tag v-if="binding.open_bound" type="success" size="small">已绑定</el-tag>
-            <el-tag v-else type="info" size="small">未绑定</el-tag>
-          </div>
-          <el-button v-if="binding.open_bound" size="small" @click="handleUnbind('pc')">解除绑定</el-button>
-          <el-button v-else size="small" type="primary" @click="handleBind('pc')">立即绑定</el-button>
-        </div>
-        <p v-if="binding.nickname" class="bind-note">微信昵称：{{ binding.nickname }}</p>
       </div>
     </div>
+
+    <!-- PC 扫码绑定弹层 -->
+    <WechatQrDialog v-model="bindQrVisible" mode="bind" @success="loadBinding" />
   </div>
 </template>
 
@@ -76,6 +66,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { userAPI } from '@/api'
 import { verifyCaptcha } from '@/utils/captcha'
+import WechatQrDialog from '@/components/WechatQrDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -84,9 +75,11 @@ const passwordLoading = ref(false)
 const countdown = ref(0)
 const phone = ref('')
 
-// 微信绑定状态（公众号/开放平台两端）
-const binding = ref({ mp_bound: false, open_bound: false, nickname: '' })
-// 公众号网页授权只能在微信客户端内完成，故非微信环境禁用该端绑定
+// 微信绑定状态
+const binding = ref({ mp_bound: false, nickname: '' })
+// 非微信环境用扫码弹层完成绑定
+const bindQrVisible = ref(false)
+// 微信客户端内可直接完成页面内授权，其它环境需扫码
 const inWechat = /MicroMessenger/i.test(navigator.userAgent)
 
 const loadBinding = async () => {
@@ -94,7 +87,6 @@ const loadBinding = async () => {
     const res: any = await userAPI.getWechatBinding()
     binding.value = {
       mp_bound: Boolean(res?.mp_bound),
-      open_bound: Boolean(res?.open_bound),
       nickname: res?.nickname || ''
     }
   } catch (error) {
@@ -102,9 +94,13 @@ const loadBinding = async () => {
   }
 }
 
-const handleBind = async (scene: string) => {
+const handleBind = async () => {
+  if (!inWechat) {
+    bindQrVisible.value = true
+    return
+  }
   try {
-    const res: any = await userAPI.wechatBindAuthorize(scene)
+    const res: any = await userAPI.wechatBindAuthorize('mp')
     if (!res?.authorize_url) throw new Error('未获取到微信授权地址')
     window.location.href = res.authorize_url
   } catch (error: any) {

@@ -171,17 +171,15 @@ type WechatPayConfig struct {
 	PublicKey       string // 微信支付公钥（PEM，用于回调验签）
 }
 
-// WechatLoginConfig 微信一键登录配置。
-// 与微信支付是两套独立的应用：手机端走公众号网页授权（MPAppID），PC 端走开放平台网站应用扫码（OpenAppID）；
-// 两套 AppSecret 均为密钥类，只由 .env 提供；开关与 AppID 存系统库 setting。
-// 注意：微信后台「网页授权域名」/「授权回调域」只允许登记少量域名（且为域名、不含路径），
+// WechatLoginConfig 微信一键登录配置（仅公众号网页授权：手机端在微信内置浏览器打开，
+// PC 端由前端渲染同一授权链接的二维码，用户用微信扫一扫在微信内置浏览器中完成授权）。
+// AppSecret 为密钥类，只由 .env 提供；开关与 AppID 存系统库 setting。
+// 注意：微信后台「网页授权域名」只允许登记少量域名（且为域名、不含路径），
 // 回跳地址由 site.Platform().ConsoleBase() 推导，品牌主域变更后必须同步到微信后台重配，否则报 redirect_uri 参数错误。
 type WechatLoginConfig struct {
-	Enabled       int    // 启用开关：1-启用 2-不启用
-	MPAppID       string // 公众号 AppID（手机端网页授权）
-	MPAppSecret   string // 公众号 AppSecret（密钥，只走 .env）
-	OpenAppID     string // 开放平台网站应用 AppID（PC 扫码登录）
-	OpenAppSecret string // 开放平台网站应用 AppSecret（密钥，只走 .env）
+	Enabled     int    // 启用开关：1-启用 2-不启用
+	MPAppID     string // 公众号 AppID
+	MPAppSecret string // 公众号 AppSecret（密钥，只走 .env）
 }
 
 // 账户实名人脸核身 provider 取值
@@ -311,9 +309,8 @@ func loadFromEnv(cfg *Config) {
 	cfg.WechatPay.MerchantPrivKey = loadPEMFile(cfg.CertsDir, getEnv("WECHAT_MCH_PRIVATE_KEY_FILE", "wechat/mch_private_key.pem"))
 	cfg.WechatPay.PublicKey = loadPEMFile(cfg.CertsDir, getEnv("WECHAT_PUBLIC_KEY_FILE", "wechat/wechat_public_key.pem"))
 
-	// 微信一键登录（网页授权 / 扫码登录）：两套 AppSecret 为密钥类，只走本文件；开关与 AppID 见文末默认值块
+	// 微信一键登录（公众号网页授权）：AppSecret 为密钥类，只走本文件；开关与 AppID 见文末默认值块
 	cfg.WechatLogin.MPAppSecret = getEnv("WECHAT_LOGIN_MP_APP_SECRET", cfg.WechatLogin.MPAppSecret)
-	cfg.WechatLogin.OpenAppSecret = getEnv("WECHAT_LOGIN_OPEN_APP_SECRET", cfg.WechatLogin.OpenAppSecret)
 
 	// 日志配置
 	cfg.Log.Dir = getEnv("LOG_DIR", cfg.Log.Dir)

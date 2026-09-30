@@ -134,7 +134,7 @@
           </el-tab-pane>
         </el-tabs>
 
-        <!-- 微信一键登录：仅在后端已配置对应端凭据时展示；点击后按环境自动走手机端授权或 PC 扫码 -->
+        <!-- 微信一键登录：仅在后端已配置公众号凭据时展示；微信内直接授权，其它环境展示扫码二维码 -->
         <div v-if="wechatLoginVisible" class="wechat-login">
           <div class="wechat-divider"><span>其他登录方式</span></div>
           <el-button class="wechat-btn" size="large" :loading="wechatLoading" @click="handleWechatLogin">
@@ -156,6 +156,9 @@
         </div>
       </div>
     </div>
+
+    <!-- PC 扫码登录弹层（微信内置浏览器环境不展示，直接走页面内授权） -->
+    <WechatQrDialog v-model="qrVisible" mode="login" @success="handleWechatSuccess" />
   </div>
 </template>
 
@@ -168,6 +171,7 @@ import { useUserStore } from '@/stores/user'
 import { resetCaptchaCache, verifyCaptcha } from '@/utils/captcha'
 import { resolvePromotion, siteBase, siteState } from '@/utils/promotion'
 import { brandState } from '@/utils/brand'
+import WechatQrDialog from '@/components/WechatQrDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -177,9 +181,13 @@ const loading = ref(false)
 const countdown = ref(0)
 const passwordFormRef = ref<FormInstance>()
 const smsFormRef = ref<FormInstance>()
-// 微信一键登录：可用性由后端 /config 下发（对应端凭据未配置时不展示入口）
+// 微信一键登录：可用性由后端 /config 下发（公众号凭据未配置时不展示入口）
 const wechatLoginVisible = ref(false)
 const wechatLoading = ref(false)
+// PC 扫码登录弹层
+const qrVisible = ref(false)
+// 是否在微信内置浏览器内（页面内授权仅在此环境有效，其它环境展示扫码二维码）
+const inWechat = /MicroMessenger/i.test(navigator.userAgent)
 // 命中推广品牌时展示其品牌名
 const promotionName = ref('')
 // 品牌区标题/副标题：均取自后端下发的品牌配置（后台「系统设置 → 品牌与域名」维护）
@@ -275,18 +283,27 @@ const sendCode = async () => {
   }
 }
 
-// 发起微信一键登录：scene 留空由后端按环境判定（微信内置浏览器走手机端授权，否则 PC 扫码）
+// 发起微信一键登录：微信内直接页面内授权；其它环境展示二维码由用户扫码授权
 const handleWechatLogin = async () => {
   if (wechatLoading.value) return
+  if (!inWechat) {
+    qrVisible.value = true
+    return
+  }
   wechatLoading.value = true
   try {
-    const res: any = await userAPI.wechatAuthorize()
+    const res: any = await userAPI.wechatAuthorize('mp')
     if (!res?.authorize_url) throw new Error('未获取到微信授权地址')
     window.location.href = res.authorize_url
   } catch (error: any) {
     ElMessage.error(error?.message || '微信登录发起失败')
     wechatLoading.value = false
   }
+}
+
+// 扫码登录成功（弹层内已完成换票与登录态写入）
+const handleWechatSuccess = () => {
+  router.replace('/dashboard')
 }
 
 onMounted(async () => {
@@ -303,7 +320,7 @@ onMounted(async () => {
 
   try {
     const config: any = await publicAPI.getConfig()
-    wechatLoginVisible.value = Boolean(config?.wechat_login?.mp || config?.wechat_login?.open)
+    wechatLoginVisible.value = Boolean(config?.wechat_login?.mp)
   } catch (error) {
     console.error(error)
   }

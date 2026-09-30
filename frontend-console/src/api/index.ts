@@ -32,12 +32,12 @@ export const userAPI = {
     return request.post('/login', data)
   },
 
-  // 微信一键登录：发起授权（scene 留空由后端按 UA 判定手机端/PC 端，返回 authorize_url）
+  // 微信一键登录：发起公众号网页授权（仅在微信内置浏览器内有效，返回 authorize_url 供跳转）
   wechatAuthorize: (scene?: string): Promise<any> => {
     return request.get('/wechat/authorize', { params: scene ? { scene } : {} })
   },
 
-  // 微信一键登录：用一次性票据换取登录态（票据由回调中转页携带）
+  // 微信一键登录：用一次性票据换取登录态（票据由回调中转页或扫码轮询携带）
   wechatTicket: (data: { ticket: string }) => {
     return request.post('/wechat/ticket', data)
   },
@@ -47,17 +47,32 @@ export const userAPI = {
     return request.post('/wechat/bind', data)
   },
 
-  // 微信绑定状态（登录态，返回公众号/开放平台两端是否已绑定与昵称）
+  // PC 扫码登录：创建扫码会话（返回 qr_ticket / qr_url / expires_in / poll_interval）
+  createWechatQRSession: (): Promise<any> => {
+    return request.post('/wechat/qr-session')
+  },
+
+  // PC 扫码登录：轮询会话状态（status: pending / need_bind / authorized / expired）
+  wechatQRPoll: (data: { qr_ticket: string }): Promise<any> => {
+    return request.post('/wechat/qr-poll', data)
+  },
+
+  // 微信绑定状态（登录态，返回公众号是否已绑定与昵称）
   getWechatBinding: (): Promise<any> => {
     return request.get('/wechat/binding')
   },
 
-  // 发起微信绑定（登录态，scene: mp-公众号 pc-开放平台，返回 authorize_url）
+  // 发起微信绑定（登录态，公众号网页授权仅在微信内置浏览器内有效，返回 authorize_url）
   wechatBindAuthorize: (scene: string): Promise<any> => {
     return request.get('/wechat/bind-authorize', { params: { scene } })
   },
 
-  // 解除微信绑定（scene: mp-公众号 pc-开放平台）
+  // PC 扫码绑定：创建扫码绑定会话（登录态，返回 qr_ticket / qr_url / expires_in / poll_interval）
+  createWechatQRBindSession: (): Promise<any> => {
+    return request.post('/wechat/qr-bind-session')
+  },
+
+  // 解除微信绑定（scene: mp-公众号）
   unbindWechat: (scene: string) => {
     return request.delete('/wechat/binding', { params: { scene } })
   },

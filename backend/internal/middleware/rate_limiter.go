@@ -80,6 +80,18 @@ func RateLimiter(limit int) gin.HandlerFunc {
 
 // RateLimiterForIP 针对 IP 的频率限制（用于登录、注册等接口）
 func RateLimiterForIP(limit int) gin.HandlerFunc {
+	return rateLimiterForIP("", limit)
+}
+
+// RateLimiterForIPKey 针对 IP + 业务域的频率限制：各业务域使用独立计数键。
+// 轮询等高频接口若与 RateLimiterForIP 共用键（rate:api:ip:<ip>）会消耗同一 IP 的共享预算，
+// 导致同 IP 的登录/发码被限流误伤。
+func RateLimiterForIPKey(scope string, limit int) gin.HandlerFunc {
+	return rateLimiterForIP(scope, limit)
+}
+
+// rateLimiterForIP 按 IP 限流：scope 为空使用共享键 rate:api:ip:<ip>，非空使用独立键 rate:api:<scope>:ip:<ip>
+func rateLimiterForIP(scope string, limit int) gin.HandlerFunc {
 	if limit <= 0 {
 		limit = DefaultRateLimit
 	}
@@ -87,6 +99,9 @@ func RateLimiterForIP(limit int) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ip := c.ClientIP()
 		key := APIRateLimitPrefix + "ip:" + ip
+		if scope != "" {
+			key = APIRateLimitPrefix + scope + ":ip:" + ip
+		}
 
 		count, err := redis.Incr(key)
 		if err != nil {
