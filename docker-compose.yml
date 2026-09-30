@@ -93,9 +93,6 @@ services:
       STARLOFT_API_KEY: ${STARLOFT_API_KEY}
       STARLOFT_API_SECRET: ${STARLOFT_API_SECRET}
 
-      # 待支付订单过期分钟数（超时自动向渠道撤回支付并关闭本地订单）
-      PAYMENT_EXPIRE_MINUTES: ${PAYMENT_EXPIRE_MINUTES:-30}
-
       # 腾讯云账号密钥（密钥类；验证码 AppID / 地域 / 四要素核验与法人扫脸参数在后台「系统设置」维护）
       TENCENT_SECRET_ID: ${TENCENT_SECRET_ID}
       TENCENT_SECRET_KEY: ${TENCENT_SECRET_KEY}
@@ -109,9 +106,12 @@ services:
       ALIYUN_ACCESS_KEY_SECRET: ${ALIYUN_ACCESS_KEY_SECRET:-}
       ALIYUN_MARKET_APPCODE: ${ALIYUN_MARKET_APPCODE:-}
 
-      # 支付宝支付证书（密钥类；AppID 等在后台「系统设置」维护）
-      ALIPAY_PRIVATE_KEY: ${ALIPAY_PRIVATE_KEY}
-      ALIPAY_PUBLIC_KEY: ${ALIPAY_PUBLIC_KEY}
+      # 支付证书文件路径（相对 CERTS_DIR，也可填绝对路径；证书内容只存于 ./certs，不写进 .env；
+      # 证书缺失时对应渠道不可用，仅记日志不阻断启动）
+      ALIPAY_PRIVATE_KEY_FILE: ${ALIPAY_PRIVATE_KEY_FILE:-alipay/app_private_key.pem}
+      ALIPAY_PUBLIC_KEY_FILE: ${ALIPAY_PUBLIC_KEY_FILE:-alipay/alipay_public_key.pem}
+      WECHAT_MCH_PRIVATE_KEY_FILE: ${WECHAT_MCH_PRIVATE_KEY_FILE:-wechat/mch_private_key.pem}
+      WECHAT_PUBLIC_KEY_FILE: ${WECHAT_PUBLIC_KEY_FILE:-wechat/wechat_public_key.pem}
       
       # 日志目录（容器内 /app/logs，挂载宿主 /data/logs）
       LOG_DIR: /app/logs
@@ -123,7 +123,7 @@ services:
       MEDIA_DIR: /app/media
 
       # 证书目录（容器内 /app/certs，bind mount 到宿主 ./certs，只读）
-      # PEM 证书以文件形式存放于此，文件缺失时回落 .env 中的字面值
+      # PEM 证书以文件形式存放于此，按上面的 *_FILE 路径读取（不在 .env 中填写证书内容）
       CERTS_DIR: /app/certs
       
       # 时区

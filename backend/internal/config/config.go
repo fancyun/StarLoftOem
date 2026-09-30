@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -297,18 +298,18 @@ func loadFromEnv(cfg *Config) {
 	// 数据加密密钥（敏感字段存储加密）
 	cfg.DataEncryptKey = getEnv("DATA_ENCRYPT_KEY", cfg.DataEncryptKey)
 
-	// 证书目录（bind mount 宿主 ./certs，容器内 /app/certs）：PEM 证书以文件形式存放，
-	// 文件缺失时回落到 .env 中的字面值，保证存量部署平滑迁移。须在读取证书文件之前赋值。
+	// 证书目录（bind mount 宿主 ./certs，容器内 /app/certs）：PEM 证书只以文件形式存放并按路径读取，
+	// 不在 .env 中填写证书内容。须在读取证书文件之前赋值。
 	cfg.CertsDir = getEnv("CERTS_DIR", "/app/certs")
 
-	// 支付宝支付配置（PEM 证书为密钥类，只走本文件；启用开关与 AppID 见文末默认值块）
-	cfg.Alipay.PrivateKey = loadPEM(cfg.CertsDir, "alipay/app_private_key.pem", getEnv("ALIPAY_PRIVATE_KEY", cfg.Alipay.PrivateKey))
-	cfg.Alipay.PublicKey = loadPEM(cfg.CertsDir, "alipay/alipay_public_key.pem", getEnv("ALIPAY_PUBLIC_KEY", cfg.Alipay.PublicKey))
+	// 支付宝支付配置（PEM 证书只按 certs 内的文件路径读取；启用开关与 AppID 见文末默认值块）
+	cfg.Alipay.PrivateKey = loadPEMFile(cfg.CertsDir, getEnv("ALIPAY_PRIVATE_KEY_FILE", "alipay/app_private_key.pem"))
+	cfg.Alipay.PublicKey = loadPEMFile(cfg.CertsDir, getEnv("ALIPAY_PUBLIC_KEY_FILE", "alipay/alipay_public_key.pem"))
 
-	// 微信支付配置（API v3，仅 APIv3 密钥与 PEM 证书为密钥类，只走本文件）
+	// 微信支付配置（API v3：仅 APIv3 密钥为密钥类走本文件；PEM 证书同上按路径读取）
 	cfg.WechatPay.ApiV3Key = getEnv("WECHAT_API_V3_KEY", cfg.WechatPay.ApiV3Key)
-	cfg.WechatPay.MerchantPrivKey = loadPEM(cfg.CertsDir, "wechat/mch_private_key.pem", getEnv("WECHAT_MCH_PRIVATE_KEY", cfg.WechatPay.MerchantPrivKey))
-	cfg.WechatPay.PublicKey = loadPEM(cfg.CertsDir, "wechat/wechat_public_key.pem", getEnv("WECHAT_PUBLIC_KEY", cfg.WechatPay.PublicKey))
+	cfg.WechatPay.MerchantPrivKey = loadPEMFile(cfg.CertsDir, getEnv("WECHAT_MCH_PRIVATE_KEY_FILE", "wechat/mch_private_key.pem"))
+	cfg.WechatPay.PublicKey = loadPEMFile(cfg.CertsDir, getEnv("WECHAT_PUBLIC_KEY_FILE", "wechat/wechat_public_key.pem"))
 
 	// 微信一键登录（网页授权 / 扫码登录）：两套 AppSecret 为密钥类，只走本文件；开关与 AppID 见文末默认值块
 	cfg.WechatLogin.MPAppSecret = getEnv("WECHAT_LOGIN_MP_APP_SECRET", cfg.WechatLogin.MPAppSecret)
@@ -367,14 +368,9 @@ func loadFromEnv(cfg *Config) {
 	cfg.Brand.LogoURL = ""
 	cfg.Brand.RootDomain = site.RootDomain
 	// 各产品成本单价（FV_AUTH_COST / FV_SELF_COST / SMS_COST）默认 0（无成本），仅在后台产品配置中维护；
-	// 支付日限额（PAYMENT_DAILY_LIMIT）默认 0（不限），仅在后台系统设置中维护。
-
-	// 待支付订单过期分钟数（默认 30），超时自动向渠道撤回支付并关闭本地订单
-	if v := getEnvInt("PAYMENT_EXPIRE_MINUTES", 0); v > 0 {
-		cfg.PaymentExpireMinutes = v
-	} else {
-		cfg.PaymentExpireMinutes = 30
-	}
+	// 支付日限额（PAYMENT_DAILY_LIMIT）默认 0（不限）、待支付订单过期分钟数（PAYMENT_EXPIRE_MINUTES）默认 30，
+	// 仅在后台系统设置中维护，此处仅为表内无值时的兜底。
+	cfg.PaymentExpireMinutes = 30
 
 	// 推广提成比例（0~1，按产品分档：人脸核验 / 短信）默认 20%，见上方默认值块。
 	// 两档各自独立配置，不再保留「单个变量同时管两档」的旧兼容分支：
@@ -412,21 +408,24 @@ func splitList(s string) []string {
 	return out
 }
 
-// normalizePEM 将 PEM 内容中的字面 \n 还原为换行
-// （.env 与 docker-compose 环境变量中的多行 PEM 需以单行 \n 形式书写）
-func normalizePEM(s string) string {
-	return strings.ReplaceAll(s, "\\n", "\n")
-}
-
-// loadPEM 读取证书文件内容（相对 CertsDir 的路径）；文件不存在或内容为空时回落 .env 中的字面值。
-// 证书以文件形式集中存放于 certs/ 目录，便于替换与轮换，且避免长 PEM 挤占环境变量。
-func loadPEM(certsDir, relPath, envValue string) string {
-	if certsDir != "" {
-		if content, err := os.ReadFile(filepath.Join(certsDir, relPath)); err == nil {
-			if s := strings.TrimSpace(string(content)); s != "" {
-				return normalizePEM(s)
-			}
-		}
+// loadPEMFile 按路径读取 PEM 证书文件内容：path 为绝对路径时直接使用，否则相对 CertsDir 解析。
+// 文件缺失或内容为空时返回空串（该渠道凭据不齐 → 客户端不构建、渠道不可用，仅记日志不阻断启动）。
+func loadPEMFile(certsDir, path string) string {
+	if path == "" {
+		return ""
 	}
-	return normalizePEM(envValue)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(certsDir, path)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("证书文件读取失败（对应渠道将不可用）: %s: %v", path, err)
+		return ""
+	}
+	s := strings.TrimSpace(string(content))
+	if s == "" {
+		log.Printf("证书文件内容为空（对应渠道将不可用）: %s", path)
+		return ""
+	}
+	return s
 }

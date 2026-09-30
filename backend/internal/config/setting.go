@@ -95,6 +95,10 @@ func ApplySettingOverrides(cfg *Config, sys, fv, sms map[string]string) {
 
 	// 支付风控
 	applyFloat(&cfg.PaymentDailyLimit, sys, SettingKeyPaymentDailyLimit)
+	// 待支付订单过期分钟数：库内值须为正整数，否则沿用内置默认（30）
+	if v, err := strconv.Atoi(strings.TrimSpace(sys[SettingKeyPaymentExpireMinutes])); err == nil && v > 0 {
+		cfg.PaymentExpireMinutes = v
+	}
 	// 推广分佣：提成比例允许为 0（表示不提成），故不沿用 applyFloat 的正数限制
 	applyFloatZero(&cfg.AffCommissionRateFV, sys, SettingKeyAffCommissionRateFV)
 	applyFloatZero(&cfg.AffCommissionRateSMS, sys, SettingKeyAffCommissionRateSMS)
@@ -138,6 +142,8 @@ const (
 	SettingKeyKycEnterprisePrice = "KYC_ENTERPRISE_PRICE"
 	// 支付风控
 	SettingKeyPaymentDailyLimit = "PAYMENT_DAILY_LIMIT"
+	// 待支付订单过期分钟数（超时自动向支付渠道关单撤回并关闭本地订单）
+	SettingKeyPaymentExpireMinutes = "PAYMENT_EXPIRE_MINUTES"
 	// 推广分佣（全局统一：所有推广商一律按此计提，改动即时生效）
 	SettingKeyAffCommissionRateFV  = "AFF_COMMISSION_RATE_FV"
 	SettingKeyAffCommissionRateSMS = "AFF_COMMISSION_RATE_SMS"
@@ -216,6 +222,7 @@ func SettingCatalog() []SettingSpec {
 
 		// 支付风控
 		{SettingKeyPaymentDailyLimit, model.SettingCategoryPayment, "单用户单日在线支付金额上限（元，留空或 0 表示不限）"},
+		{SettingKeyPaymentExpireMinutes, model.SettingCategoryPayment, "待支付订单过期分钟数（默认 30）：超时自动向支付渠道关单撤回并关闭本地订单"},
 
 		// 推广分佣（全局统一：所有推广商与员工销售一律按此计提，改完即时生效；计提基数为利润）
 		{SettingKeyAffCommissionRateFV, model.SettingCategoryAff, "人脸核验提成比例（0~1，如 0.2 表示按下级利润的 20% 计提；0 表示不提成）。利润 = 实付 − 成本 × 次数，成本在「人脸核验 → 产品配置」设置；全局统一，即时生效"},
@@ -267,6 +274,7 @@ func (cfg *Config) SettingValues() map[string]string {
 		SettingKeyKycPersonalPrice:                formatFloat(cfg.KycPersonalPrice),
 		SettingKeyKycEnterprisePrice:              formatFloat(cfg.KycEnterprisePrice),
 		SettingKeyPaymentDailyLimit:               formatFloat(cfg.PaymentDailyLimit),
+		SettingKeyPaymentExpireMinutes:            strconv.Itoa(cfg.PaymentExpireMinutes),
 		SettingKeyAffCommissionRateFV:             formatFloat(cfg.AffCommissionRateFV),
 		SettingKeyAffCommissionRateSMS:            formatFloat(cfg.AffCommissionRateSMS),
 		SettingKeyContactEmail:                    cfg.Contact.Email,
