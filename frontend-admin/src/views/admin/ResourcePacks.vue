@@ -412,7 +412,8 @@ const handleTestPackSubmit = async () => {
             product: effectiveProduct.value as 'fv_auth' | 'fv_self',
             count: testPackForm.count
           })
-      ElMessage.success(`已发放：${result?.pack_name || '测试包'}`)
+      const unit = product.value === 'sms' ? '条' : '次'
+      ElMessage.success(`已发放：${result?.count ?? ''} ${unit}`)
       testPackVisible.value = false
     } catch (error: any) {
       ElMessage.error(error.response?.data?.message || '发放失败')

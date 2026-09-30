@@ -44,7 +44,6 @@
         <el-table-column prop="username" label="用户名" min-width="120">
           <template #default="{ row }">{{ row.username || '-' }}</template>
         </el-table-column>
-        <el-table-column prop="pack_name" label="资源包名称" min-width="160" show-overflow-tooltip />
         <el-table-column label="产品" width="130">
           <template #default="{ row }">
             <el-tag :type="productTagType(row)">{{ row.product || row.scope || '-' }}</el-tag>

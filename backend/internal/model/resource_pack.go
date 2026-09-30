@@ -23,7 +23,6 @@ func (UserResourcePack) TableName() string { return FvDB + ".user_resource_pack"
 type UserResourcePack struct {
 	ID             int64     `json:"id" gorm:"primaryKey;autoIncrement"`
 	UserID         int64     `json:"user_id" gorm:"not null;index;index:idx_user_status,priority:1"`
-	PackName       string    `json:"pack_name" gorm:"size:100;not null"`                       // 资源包名称（快照）
 	TotalCount     int       `json:"total_count" gorm:"not null"`                              // 总次数（快照）
 	RemainingCount int       `json:"remaining_count" gorm:"not null"`                          // 剩余次数
 	Product        string    `json:"product" gorm:"size:32;index"`                             // 所属子产品/服务标识（快照，对应 resource_pack.product）
@@ -56,7 +55,6 @@ func (SmsUserResourcePack) TableName() string { return SmsDB + ".user_resource_p
 type SmsUserResourcePack struct {
 	ID             int64     `json:"id" gorm:"primaryKey;autoIncrement"`
 	UserID         int64     `json:"user_id" gorm:"not null;index;index:idx_user_status,priority:1"`
-	PackName       string    `json:"pack_name" gorm:"size:100;not null"`                       // 资源包名称（快照）
 	TotalCount     int       `json:"total_count" gorm:"not null"`                              // 总条数（快照）
 	RemainingCount int       `json:"remaining_count" gorm:"not null"`                          // 剩余条数
 	Product        string    `json:"product" gorm:"size:32;not null;default:'sms';index"`      // 所属类型快照：sms-验证码/通知短信、sms_marketing-营销短信

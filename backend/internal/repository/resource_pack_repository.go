@@ -105,10 +105,10 @@ func (r *ResourcePackRepository) ListPacks(status *int) ([]*model.ResourcePack, 
 
 // CreateUserPackTx 在事务中创建用户资源包
 func (r *ResourcePackRepository) CreateUserPackTx(tx *sql.Tx, up *model.UserResourcePack) error {
-	query := `INSERT INTO ` + model.FvDB + `.user_resource_pack (user_id, pack_name, total_count, remaining_count, product, price, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO ` + model.FvDB + `.user_resource_pack (user_id, total_count, remaining_count, product, price, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	result, err := tx.Exec(query,
-		up.UserID, up.PackName, up.TotalCount, up.RemainingCount, up.Product, up.Price, up.Status,
+		up.UserID, up.TotalCount, up.RemainingCount, up.Product, up.Price, up.Status,
 		time.Now(), time.Now(),
 	)
 	if err != nil {
@@ -133,7 +133,7 @@ func (r *ResourcePackRepository) GetUserActivePack(userID int64, product string)
 		candidates = append(candidates, model.ProductFV, "")
 	}
 	in := strings.Repeat(",?", len(candidates))[1:]
-	query := `SELECT id, user_id, pack_name, total_count, remaining_count, COALESCE(product, ''), price, status, created_at, updated_at
+	query := `SELECT id, user_id, total_count, remaining_count, COALESCE(product, ''), price, status, created_at, updated_at
 		FROM ` + model.FvDB + `.user_resource_pack
 		WHERE user_id = ? AND status = 1 AND remaining_count > 0
 		  AND COALESCE(product, '') IN (` + in + `)
@@ -149,7 +149,7 @@ func (r *ResourcePackRepository) GetUserActivePack(userID int64, product string)
 	}
 	up := &model.UserResourcePack{}
 	err := r.db.QueryRow(query, args...).Scan(
-		&up.ID, &up.UserID, &up.PackName, &up.TotalCount,
+		&up.ID, &up.UserID, &up.TotalCount,
 		&up.RemainingCount, &up.Product, &up.Price, &up.Status, &up.CreatedAt, &up.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -189,7 +189,7 @@ func (r *ResourcePackRepository) RefundUserPackCount(id int64) error {
 
 // ListUserPacks 查询用户全部资源包（含已耗尽），按购买时间倒序
 func (r *ResourcePackRepository) ListUserPacks(userID int64) ([]*model.UserResourcePack, error) {
-	query := `SELECT id, user_id, pack_name, total_count, remaining_count, COALESCE(product, ''), price, status, created_at, updated_at
+	query := `SELECT id, user_id, total_count, remaining_count, COALESCE(product, ''), price, status, created_at, updated_at
 		FROM ` + model.FvDB + `.user_resource_pack
 		WHERE user_id = ?
 		ORDER BY id DESC`
@@ -203,7 +203,7 @@ func (r *ResourcePackRepository) ListUserPacks(userID int64) ([]*model.UserResou
 	for rows.Next() {
 		up := &model.UserResourcePack{}
 		if err := rows.Scan(
-			&up.ID, &up.UserID, &up.PackName, &up.TotalCount,
+			&up.ID, &up.UserID, &up.TotalCount,
 			&up.RemainingCount, &up.Product, &up.Price, &up.Status, &up.CreatedAt, &up.UpdatedAt,
 		); err != nil {
 			return nil, err

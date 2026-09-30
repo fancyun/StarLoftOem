@@ -400,7 +400,6 @@ func (s *BalanceService) PrepareResourcePackOnline(userID, packID int64, channel
 	if externalPart <= 0 {
 		up := &model.UserResourcePack{
 			UserID:         userID,
-			PackName:       pack.Name,
 			TotalCount:     pack.TotalCount,
 			RemainingCount: pack.TotalCount,
 			Product:        pack.Product, // 产品快照：消费端按此匹配资源包，缺省会导致已购包无法抵扣
@@ -572,7 +571,6 @@ func (s *BalanceService) SettleResourcePackPaid(orderID int64, channelTradeNo st
 
 	up := &model.UserResourcePack{
 		UserID:         order.UserID,
-		PackName:       pack.Name,
 		TotalCount:     pack.TotalCount,
 		RemainingCount: pack.TotalCount,
 		Product:        pack.Product,                       // 产品快照：消费端按此匹配资源包，缺省会导致已购包无法抵扣
@@ -1205,7 +1203,6 @@ func (s *BalanceService) PurchaseResourcePack(userID, packID int64) (*model.User
 	// 创建用户资源包（次数快照）
 	up := &model.UserResourcePack{
 		UserID:         userID,
-		PackName:       pack.Name,
 		TotalCount:     pack.TotalCount,
 		RemainingCount: pack.TotalCount,
 		Product:        pack.Product,
@@ -1273,7 +1270,6 @@ func (s *BalanceService) PurchaseSmsResourcePack(userID, packID int64) (*model.S
 
 	up := &model.SmsUserResourcePack{
 		UserID:         userID,
-		PackName:       pack.Name,
 		TotalCount:     pack.TotalCount,
 		RemainingCount: pack.TotalCount,
 		Product:        pack.Product, // 类型快照：消费端按此与模板类型匹配
@@ -1320,7 +1316,6 @@ type TestPackGrant struct {
 	UserPackID int64
 	Product    string
 	Count      int
-	PackName   string
 }
 
 // GrantTestPack 管理员向指定用户发放测试资源包（免费发放，不产生资金账单，故不写 bill）。
@@ -1358,14 +1353,8 @@ func (s *BalanceService) GrantTestPack(adminID, userID int64, product string, co
 
 	grant := &TestPackGrant{Product: product, Count: count}
 	if product == model.ServiceSMS || product == model.ProductSMSMarketing {
-		label := "验证码/通知"
-		if product == model.ProductSMSMarketing {
-			label = "营销"
-		}
-		grant.PackName = fmt.Sprintf("测试资源包（%s · %d 条）", label, count)
 		up := &model.SmsUserResourcePack{
 			UserID:         userID,
-			PackName:       grant.PackName,
 			TotalCount:     count,
 			RemainingCount: count,
 			Product:        product, // 类型快照：与模板类型匹配消费
@@ -1377,14 +1366,8 @@ func (s *BalanceService) GrantTestPack(adminID, userID int64, product string, co
 		}
 		grant.UserPackID = up.ID
 	} else {
-		label := "有源"
-		if product == model.ServiceFVSelf {
-			label = "无源"
-		}
-		grant.PackName = fmt.Sprintf("测试资源包（%s · %d 次）", label, count)
 		up := &model.UserResourcePack{
 			UserID:         userID,
-			PackName:       grant.PackName,
 			TotalCount:     count,
 			RemainingCount: count,
 			Product:        product, // 子产品快照：有源/无源各自独立抵扣，互不通用
@@ -1406,8 +1389,7 @@ func (s *BalanceService) GrantTestPack(adminID, userID int64, product string, co
 		audit.KV("user_id", userID),
 		audit.KV("product", product),
 		audit.KV("count", count),
-		audit.KV("user_pack_id", grant.UserPackID),
-		audit.KV("pack_name", grant.PackName))
+		audit.KV("user_pack_id", grant.UserPackID))
 	return grant, nil
 }
 

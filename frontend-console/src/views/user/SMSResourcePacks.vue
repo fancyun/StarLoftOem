@@ -35,10 +35,7 @@
           >
             <div class="my-pack-info">
               <div class="my-pack-name">
-                {{ pack.pack_name }}
-                <el-tag :type="pack.product === 'sms_marketing' ? 'warning' : 'info'" size="small" class="pack-type-tag">
-                  {{ pack.product === 'sms_marketing' ? '营销短信' : '验证码/通知' }}
-                </el-tag>
+                {{ pack.product === 'sms_marketing' ? '营销短信' : '验证码/通知' }}
               </div>
               <div class="my-pack-count">
                 剩余 {{ pack.remaining_count }} / {{ pack.total_count }} 条短信
@@ -155,10 +152,6 @@ onMounted(() => {
 .my-pack-name {
   font-weight: 600;
   color: var(--text-primary);
-}
-
-.pack-type-tag {
-  margin-left: 6px;
 }
 
 .my-pack-count {

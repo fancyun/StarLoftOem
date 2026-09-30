@@ -35,8 +35,7 @@
           >
             <div class="my-pack-info">
               <div class="my-pack-name">
-                {{ pack.pack_name }}
-                <el-tag size="small" type="primary" style="margin-left: 8px">{{ productLabel(pack.product) }}</el-tag>
+                {{ productLabel(pack.product) }}
               </div>
               <div class="my-pack-count">
                 剩余 {{ pack.remaining_count }} / {{ pack.total_count }} {{ unitText(pack.product) }}

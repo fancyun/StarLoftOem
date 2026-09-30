@@ -109,10 +109,10 @@ func (r *SmsResourcePackRepository) ListPacks(status *int, product string) ([]*m
 
 // CreateUserPackTx 在事务中创建用户短信资源包
 func (r *SmsResourcePackRepository) CreateUserPackTx(tx *sql.Tx, up *model.SmsUserResourcePack) error {
-	query := `INSERT INTO ` + model.SmsDB + `.user_resource_pack (user_id, pack_name, total_count, remaining_count, product, price, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO ` + model.SmsDB + `.user_resource_pack (user_id, total_count, remaining_count, product, price, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	result, err := tx.Exec(query,
-		up.UserID, up.PackName, up.TotalCount, up.RemainingCount, up.Product, up.Price, up.Status,
+		up.UserID, up.TotalCount, up.RemainingCount, up.Product, up.Price, up.Status,
 		time.Now(), time.Now(),
 	)
 	if err != nil {
@@ -128,14 +128,14 @@ func (r *SmsResourcePackRepository) CreateUserPackTx(tx *sql.Tx, up *model.SmsUs
 
 // GetUserActivePack 获取用户指定类型 product 下第一个有效短信资源包（剩余条数 > 0），按购买时间升序
 func (r *SmsResourcePackRepository) GetUserActivePack(userID int64, product string) (*model.SmsUserResourcePack, error) {
-	query := `SELECT id, user_id, pack_name, total_count, remaining_count, product, price, status, created_at, updated_at
+	query := `SELECT id, user_id, total_count, remaining_count, product, price, status, created_at, updated_at
 		FROM ` + model.SmsDB + `.user_resource_pack
 		WHERE user_id = ? AND product = ? AND status = 1 AND remaining_count > 0
 		ORDER BY created_at ASC
 		LIMIT 1`
 	up := &model.SmsUserResourcePack{}
 	err := r.db.QueryRow(query, userID, product).Scan(
-		&up.ID, &up.UserID, &up.PackName, &up.TotalCount,
+		&up.ID, &up.UserID, &up.TotalCount,
 		&up.RemainingCount, &up.Product, &up.Price, &up.Status, &up.CreatedAt, &up.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -207,7 +207,7 @@ func (r *SmsResourcePackRepository) RefundUserPackCountByUser(userID int64, coun
 
 // ListUserPacks 查询用户全部短信资源包（含已耗尽），按购买时间倒序
 func (r *SmsResourcePackRepository) ListUserPacks(userID int64) ([]*model.SmsUserResourcePack, error) {
-	query := `SELECT id, user_id, pack_name, total_count, remaining_count, product, price, status, created_at, updated_at
+	query := `SELECT id, user_id, total_count, remaining_count, product, price, status, created_at, updated_at
 		FROM ` + model.SmsDB + `.user_resource_pack
 		WHERE user_id = ?
 		ORDER BY id DESC`
@@ -221,7 +221,7 @@ func (r *SmsResourcePackRepository) ListUserPacks(userID int64) ([]*model.SmsUse
 	for rows.Next() {
 		up := &model.SmsUserResourcePack{}
 		if err := rows.Scan(
-			&up.ID, &up.UserID, &up.PackName, &up.TotalCount,
+			&up.ID, &up.UserID, &up.TotalCount,
 			&up.RemainingCount, &up.Product, &up.Price, &up.Status, &up.CreatedAt, &up.UpdatedAt,
 		); err != nil {
 			return nil, err

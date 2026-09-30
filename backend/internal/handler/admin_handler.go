@@ -1195,7 +1195,6 @@ func (h *AdminHandler) grantTestPack(c *gin.Context, allowed ...string) {
 			"user_pack_id": grant.UserPackID,
 			"product":      grant.Product,
 			"count":        grant.Count,
-			"pack_name":    grant.PackName,
 		},
 	})
 }
