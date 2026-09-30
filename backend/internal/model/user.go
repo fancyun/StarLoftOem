@@ -34,12 +34,14 @@ type User struct {
 	EnterpriseFreeBase int       `json:"enterprise_free_base" gorm:"not null;default:0"` // 企业实名免费次数基准偏移
 	// 微信一键登录绑定（同一微信号仅绑定一个账号；未绑定时均为 NULL）
 	// 可空 + 唯一索引：MySQL 唯一索引不对 NULL 去重，故未绑定行互不冲突；解绑须写 NULL 而非空串
-	WechatUnionID    sql.NullString `json:"-" gorm:"size:64;uniqueIndex:uk_user_wechat_unionid"`     // 微信 unionid（同一开放平台账号下唯一，可能为空）
-	WechatMPOpenID   sql.NullString `json:"-" gorm:"size:64;uniqueIndex:uk_user_wechat_mp_openid"`   // 公众号网页授权 openid（手机端一键登录）
-	WechatOpenOpenID sql.NullString `json:"-" gorm:"size:64;uniqueIndex:uk_user_wechat_open_openid"` // 开放平台网站应用 openid（PC 扫码登录）
-	WechatNickname   sql.NullString `json:"-" gorm:"size:64"`                                        // 微信昵称（扫码登录时取回，可为空）
-	CreatedAt        time.Time      `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt          time.Time `json:"updated_at" gorm:"autoUpdateTime"`
+	// 显式声明 column：GORM 会把 UnionID/OpenID 推成 union_id/open_id，与迁移（000054）建的列名不一致，
+	// 会导致 AutoMigrate 误判列缺失并重建已存在的唯一索引（Error 1061）
+	WechatUnionID    sql.NullString `json:"-" gorm:"column:wechat_unionid;size:64;uniqueIndex:uk_user_wechat_unionid"`       // 微信 unionid（同一开放平台账号下唯一，可能为空）
+	WechatMPOpenID   sql.NullString `json:"-" gorm:"column:wechat_mp_openid;size:64;uniqueIndex:uk_user_wechat_mp_openid"`   // 公众号网页授权 openid（手机端一键登录）
+	WechatOpenOpenID sql.NullString `json:"-" gorm:"column:wechat_open_openid;size:64;uniqueIndex:uk_user_wechat_open_openid"` // 开放平台网站应用 openid（PC 扫码登录）
+	WechatNickname   sql.NullString `json:"-" gorm:"column:wechat_nickname;size:64"`                                        // 微信昵称（扫码登录时取回，可为空）
+	CreatedAt          time.Time      `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt          time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 // AdminUser 管理员/员工账号（后台登录账号；员工与销售同为该表记录，按 permissions 逐项授权）
