@@ -231,9 +231,8 @@ func (h *DashboardHandler) GetFinanceStats(c *gin.Context) {
 
 	// 1. 充值统计
 	type RechargeStats struct {
-		TotalAmount  float64 `json:"total_amount"`
-		TotalOrders  int64   `json:"total_orders"`
-		AlipayAmount float64 `json:"alipay_amount"`
+		TotalAmount float64 `json:"total_amount"`
+		TotalOrders int64   `json:"total_orders"`
 	}
 
 	rechargeStats := &RechargeStats{}
@@ -248,9 +247,6 @@ func (h *DashboardHandler) GetFinanceStats(c *gin.Context) {
 	if err != nil {
 		log.Printf("Failed to query recharge stats: %v", err)
 	}
-
-	// 按渠道统计
-	h.db.QueryRow("SELECT COALESCE(SUM(amount), 0) FROM payment_order WHERE status = 1 AND channel = 'alipay' AND DATE(paid_at) BETWEEN ? AND ?", startDate, endDate).Scan(&rechargeStats.AlipayAmount)
 
 	// 2. 消费统计
 	type ConsumeStats struct {

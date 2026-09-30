@@ -1,6 +1,6 @@
 # OEM 经销商系统（基于 StarLoft 代码基线）
 
-[![Version](https://img.shields.io/badge/version-v1.2.0-blue.svg)](https://github.com/fancyun/StarLoftOem)
+[![Version](https://img.shields.io/badge/version-v1.2.1-blue.svg)](https://github.com/fancyun/StarLoftOem)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/go-1.20+-00ADD8.svg)](https://golang.org/)
 [![Docker](https://img.shields.io/badge/docker-20.10+-2496ED.svg)](https://www.docker.com/)
@@ -274,5 +274,5 @@ StarLoft/
 
 ---
 
-**版本**: v1.2.0
+**版本**: v1.2.1
 **更新日期**: 2026-09-30

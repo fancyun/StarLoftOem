@@ -30,10 +30,6 @@
           <div class="stat-value">{{ recharge.total_orders || 0 }}</div>
         </div>
         <div class="stat-card">
-          <div class="stat-label">支付宝充值</div>
-          <div class="stat-value">¥{{ recharge.alipay_amount || 0 }}</div>
-        </div>
-        <div class="stat-card">
           <div class="stat-label">总消费金额</div>
           <div class="stat-value">¥{{ consume.total_amount || 0 }}</div>
         </div>
