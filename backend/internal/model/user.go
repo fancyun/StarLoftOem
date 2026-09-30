@@ -25,20 +25,20 @@ type User struct {
 	VerifiedName   sql.NullString `json:"verified_name,omitempty" gorm:"size:100"`                // 实名主体名称（个人=姓名，企业=企业名称）
 	VerifiedNumber sql.NullString `json:"verified_number,omitempty" gorm:"size:128"`              // 实名主体证件号（个人=身份证号，企业=统一社会信用代码；存储加密）
 	Status         int            `json:"status" gorm:"type:tinyint;not null;default:1;index"`
-	AffCode        sql.NullString `json:"aff_code,omitempty" gorm:"size:12;uniqueIndex:uk_user_aff_code"` // 推广码（12 位数字+小写字母，未开通推广为 NULL）
-	ReferrerType   string         `json:"referrer_type" gorm:"size:8;not null;default:''"`                // 归属推介方类型：user-用户 staff-员工（空=平台直营）
-	ReferrerID     int64          `json:"referrer_id" gorm:"not null;default:0"`                          // 归属推介方 ID（user→user.id，staff→admin_user.id；0=平台直营）
+	AffCode        sql.NullString `json:"aff_code,omitempty" gorm:"size:12;uniqueIndex:uk_user_aff_code"`                // 推广码（12 位数字+小写字母，未开通推广为 NULL）
+	ReferrerType   string         `json:"referrer_type" gorm:"size:8;not null;default:'';index:idx_referrer,priority:1"` // 归属推介方类型：user-用户 staff-员工（空=平台直营）
+	ReferrerID     int64          `json:"referrer_id" gorm:"not null;default:0;index:idx_referrer,priority:2"`           // 归属推介方 ID（user→user.id，staff→admin_user.id；0=平台直营）
 	LastLoginAt    *time.Time     `json:"last_login_at,omitempty"`
 	// 实名免费次数重置基准：剩余免费次数 = 免费上限(3) - (已发起核验次数 - 基准)；管理员重置时把基准设为当前已用次数。
-	PersonalFreeBase   int       `json:"personal_free_base" gorm:"not null;default:0"`   // 个人实名免费次数基准偏移
-	EnterpriseFreeBase int       `json:"enterprise_free_base" gorm:"not null;default:0"` // 企业实名免费次数基准偏移
+	PersonalFreeBase   int `json:"personal_free_base" gorm:"not null;default:0"`   // 个人实名免费次数基准偏移
+	EnterpriseFreeBase int `json:"enterprise_free_base" gorm:"not null;default:0"` // 企业实名免费次数基准偏移
 	// 微信一键登录绑定（同一微信号仅绑定一个账号；未绑定时均为 NULL）
 	// 可空 + 唯一索引：MySQL 唯一索引不对 NULL 去重，故未绑定行互不冲突；解绑须写 NULL 而非空串
 	// 显式声明 column：GORM 会把 UnionID/OpenID 推成 union_id/open_id，与迁移（000054）建的列名不一致，
 	// 会导致 AutoMigrate 误判列缺失并重建已存在的唯一索引（Error 1061）
 	WechatUnionID  sql.NullString `json:"-" gorm:"column:wechat_unionid;size:64;uniqueIndex:uk_user_wechat_unionid"`     // 微信 unionid（同一开放平台账号下唯一，可能为空）
 	WechatMPOpenID sql.NullString `json:"-" gorm:"column:wechat_mp_openid;size:64;uniqueIndex:uk_user_wechat_mp_openid"` // 公众号网页授权 openid（手机端一键登录 / PC 扫码登录共用）
-	WechatNickname sql.NullString `json:"-" gorm:"column:wechat_nickname;size:64"`                                        // 微信昵称（可为空）
+	WechatNickname sql.NullString `json:"-" gorm:"column:wechat_nickname;size:64"`                                       // 微信昵称（可为空）
 	CreatedAt      time.Time      `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt      time.Time      `json:"updated_at" gorm:"autoUpdateTime"`
 }

@@ -21,6 +21,25 @@ export async function loadAuthImage(url: string): Promise<string> {
   return URL.createObjectURL(resp.data)
 }
 
+// loadAuthFile 以管理员 token 拉取受保护文件（blob → objectURL），供认证媒体（照片/视频）查看。
+// path 为后端绝对路径（如 /admin/records/1/media?kind=image），故不走 baseURL=/admin 的 request 实例。
+// 媒体缺失时后端返回 HTTP 200 + JSON 错误体（blob type 为 application/json），此处直接抛错，
+// 由调用方按「无该媒体」静默处理，避免把错误 JSON 当成媒体文件展示。
+export async function loadAuthFile(path: string): Promise<string> {
+  if (!path) return ''
+  const adminStore = useAdminStore()
+  const resp = await axios.get(path, {
+    responseType: 'blob',
+    timeout: 60000,
+    headers: { Authorization: `Bearer ${adminStore.adminToken}` }
+  })
+  const type: string = resp.data?.type || ''
+  if (type.includes('application/json')) {
+    throw new Error('media not found')
+  }
+  return URL.createObjectURL(resp.data)
+}
+
 // 类型定义
 interface StatsOverview {
   total_users: number
@@ -154,13 +173,18 @@ export const adminAPI = {
   },
 
   // 获取企业实名（kyb）记录列表
-  getKybRecords: (params: { page?: number; page_size?: number }) => {
+  getKybRecords: (params: { page?: number; page_size?: number; status?: number }) => {
     return request.get('/kyb', { params })
   },
 
   // 后台企业实名开通（录入企业名称与统一社会信用代码）
   verifyKyb: (data: { user_id: number; company_name: string; credit_code: string }) => {
     return request.post('/kyb/verify', data)
+  },
+
+  // 后台人工审核企业实名申请（通过/驳回）
+  reviewKybManual: (data: { id: number; action: 'approve' | 'reject'; reason?: string }) => {
+    return request.post('/kyb/review', data)
   },
 
   // 获取财务汇总
@@ -396,5 +420,68 @@ export const adminAPI = {
   // 销售月度报告：推广客户（按注册月份过滤）
   getSalesUsers: (params: { staff_id?: number; month?: string; page?: number; page_size?: number }) => {
     return request.get('/sales/users', { params })
+  },
+
+  // 运维审计：用户登录日志（keyword 匹配账号/IP）
+  getUserLoginLogs: (params: any) => {
+    return request.get('/login-logs/users', { params })
+  },
+
+  // 运维审计：管理员登录日志（keyword 匹配账号/IP）
+  getAdminLoginLogs: (params: any) => {
+    return request.get('/login-logs/admins', { params })
+  },
+
+  // 运维审计：可查看的日志文件列表（名称/大小/最后写入时间）
+  getLogFiles: () => {
+    return request.get('/logs/files')
+  },
+
+  // 运维审计：读取日志文件尾部若干行（可选关键词过滤）
+  getLogFile: (name: string, params: { lines?: number; keyword?: string }) => {
+    return request.get(`/logs/files/${name}`, { params })
+  },
+
+  // 运维审计：系统监控汇总（数据库/Redis/进程/日志/库表/运行配置）
+  getSystemMonitor: () => {
+    return request.get('/system/monitor')
+  },
+
+  // 运维审计：业务规模指标（后台账号数/配置项数/通知重试积压）
+  getBusinessStats: (): Promise<any> => request.get('/stats/business'),
+
+  // 运维审计：下游通知重试记录
+  getNotifyRecords: (params: any) => {
+    return request.get('/notify-records', { params })
+  },
+
+  // 运维审计：手动重推一条通知（以业务类型 + 业务单号定位；force=true 时重置已放弃记录后再推）
+  retryNotifyRecord: (data: { biz_type: string; biz_no: string; force: boolean }) => {
+    return request.post('/notify-records/retry', data)
+  },
+
+  // 用户资产：用户已购资源包（scope=fv|sms 留空合并）
+  getUserPacks: (params: any) => {
+    return request.get('/user-packs', { params })
+  },
+
+  // 用户资产：全平台 API 密钥（只读，不含 api_secret）
+  getAdminApiKeys: (params: any) => {
+    return request.get('/api-keys', { params })
+  },
+
+  // 用户资产：上传文件登记
+  getUploads: (params: any) => {
+    return request.get('/uploads', { params })
+  },
+
+  // 推广归属：推广商列表（用户型推广 + 员工销售）
+  getPromoters: (params: any) => {
+    return request.get('/promoters', { params })
+  },
+
+  // 推广归属：推广商详情（基本信息 + 上级 + 下级用户分页）
+  getPromoterDetail: (type: string, id: number, params: any) => {
+    return request.get(`/promoters/${type}/${id}`, { params })
   }
 }

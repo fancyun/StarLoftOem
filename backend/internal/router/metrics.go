@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-)
 
-var processStartTime = time.Now()
+	"oemrpa/internal/utils"
+)
 
 // metricsHandler 输出 Prometheus 文本格式的运行指标（用于监控采集 Prometheus /metrics）
 func metricsHandler(c *gin.Context) {
@@ -31,5 +31,5 @@ func metricsHandler(c *gin.Context) {
 
 	fmt.Fprintf(c.Writer, "# HELP process_uptime_seconds Process uptime in seconds.\n")
 	fmt.Fprintf(c.Writer, "# TYPE process_uptime_seconds gauge\n")
-	fmt.Fprintf(c.Writer, "process_uptime_seconds %.0f\n", time.Since(processStartTime).Seconds())
+	fmt.Fprintf(c.Writer, "process_uptime_seconds %.0f\n", time.Since(utils.ProcessStartTime).Seconds())
 }

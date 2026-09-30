@@ -99,6 +99,54 @@ const routes: Array<RouteRecordRaw> = [
         name: 'AdminSettings',
         component: () => import('@/views/admin/Settings.vue'),
         meta: { permission: 'sys.settings' }
+      },
+      {
+        path: 'logs/login',
+        name: 'AdminLoginLogs',
+        component: () => import('@/views/admin/LoginLogs.vue'),
+        meta: { permission: 'ops.logs' }
+      },
+      {
+        path: 'logs/files',
+        name: 'AdminSystemLogs',
+        component: () => import('@/views/admin/SystemLogs.vue'),
+        meta: { permission: 'ops.logs' }
+      },
+      {
+        path: 'notify',
+        name: 'AdminNotify',
+        component: () => import('@/views/admin/NotifyRecords.vue'),
+        meta: { permission: 'ops.notify' }
+      },
+      {
+        path: 'monitor',
+        name: 'AdminMonitor',
+        component: () => import('@/views/admin/Monitor.vue'),
+        meta: { permission: 'ops.monitor' }
+      },
+      {
+        path: 'api-keys',
+        name: 'AdminApiKeys',
+        component: () => import('@/views/admin/ApiKeys.vue'),
+        meta: { permission: 'ops.api_keys' }
+      },
+      {
+        path: 'uploads',
+        name: 'AdminUploads',
+        component: () => import('@/views/admin/Uploads.vue'),
+        meta: { permission: 'ops.uploads' }
+      },
+      {
+        path: 'promoters',
+        name: 'AdminPromoters',
+        component: () => import('@/views/admin/Promoters.vue'),
+        meta: { permission: 'ops.promoters' }
+      },
+      {
+        path: 'promoters/:type/:id',
+        name: 'AdminPromoterDetail',
+        component: () => import('@/views/admin/PromoterDetail.vue'),
+        meta: { permission: 'ops.promoters' }
       }
     ]
   },
@@ -145,6 +193,12 @@ const routes: Array<RouteRecordRaw> = [
         meta: { permission: 'sms.packs' }
       },
       {
+        path: 'user-packs',
+        name: 'AdminSmsUserPacks',
+        component: () => import('@/views/admin/UserPacks.vue'),
+        meta: { permission: 'sms.packs' }
+      },
+      {
         path: 'product-config',
         name: 'AdminSmsProductConfig',
         component: () => import('@/views/admin/ProductConfig.vue'),
@@ -174,6 +228,12 @@ const routes: Array<RouteRecordRaw> = [
         path: 'packs',
         name: 'AdminFvPacks',
         component: () => import('@/views/admin/ResourcePacks.vue'),
+        meta: { permission: 'fv.packs' }
+      },
+      {
+        path: 'user-packs',
+        name: 'AdminFvUserPacks',
+        component: () => import('@/views/admin/UserPacks.vue'),
         meta: { permission: 'fv.packs' }
       },
       {

@@ -524,3 +524,74 @@ func (h *PromotionHandler) AdminSalesUsers(c *gin.Context) {
 		"data": gin.H{"list": users, "total": total, "page": page, "page_size": pageSize},
 	})
 }
+
+// AdminPromoters 后台推广商列表（用户型推广 + 员工销售，含推广码/下级数/累计提成）
+// GET /admin/promoters?referrer_type=&keyword=&page=&page_size=
+func (h *PromotionHandler) AdminPromoters(c *gin.Context) {
+	referrerType := strings.TrimSpace(c.Query("referrer_type"))
+	if referrerType != "" && referrerType != model.RefTypeReferrerUser && referrerType != model.RefTypeReferrerStaff {
+		failPromotion(c, 400, "invalid referrer_type")
+		return
+	}
+	page, pageSize := paginationParams(c)
+	list, total, err := h.promotionService.ListPromoters(referrerType, strings.TrimSpace(c.Query("keyword")), page, pageSize)
+	if err != nil {
+		failPromotion(c, 500, "查询失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0, "message": "success",
+		"data": gin.H{"list": list, "total": total, "page": page, "page_size": pageSize},
+	})
+}
+
+// AdminPromoterDetail 后台推广商详情：基本信息 + 上级（平台直营为 null）+ 下级用户分页
+// GET /admin/promoters/:type/:id?start_date=&end_date=&page=&page_size=
+func (h *PromotionHandler) AdminPromoterDetail(c *gin.Context) {
+	referrerType := c.Param("type")
+	if referrerType != model.RefTypeReferrerUser && referrerType != model.RefTypeReferrerStaff {
+		failPromotion(c, 400, "invalid referrer_type")
+		return
+	}
+	referrerID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || referrerID <= 0 {
+		failPromotion(c, 400, "invalid request parameters")
+		return
+	}
+
+	promoter, err := h.promotionService.PromoterDetail(referrerType, referrerID)
+	if err != nil {
+		failPromotion(c, 500, "查询失败")
+		return
+	}
+	if promoter == nil {
+		failPromotion(c, 400, "推广商不存在")
+		return
+	}
+
+	// 上级归属：仅用户型推广有上级（员工销售为平台自营体系），平台直营返回 null
+	var referrer gin.H
+	if referrerType == model.RefTypeReferrerUser {
+		if rtype, rid, ok := h.promotionService.ReferrerOf(referrerID); ok {
+			name, phone, _ := h.promotionService.ReferrerInfo(rtype, rid)
+			referrer = gin.H{"referrer_type": rtype, "referrer_id": rid, "name": name, "phone": phone}
+		}
+	}
+
+	page, pageSize := paginationParams(c)
+	startDate := strings.TrimSpace(c.Query("start_date"))
+	endDate := strings.TrimSpace(c.Query("end_date"))
+	subUsers, subTotal, err := h.promotionService.ListSubUsersByRange(referrerType, referrerID, startDate, endDate, page, pageSize)
+	if err != nil {
+		failPromotion(c, 500, "查询下级用户失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0, "message": "success",
+		"data": gin.H{
+			"promoter":  promoter,
+			"referrer":  referrer,
+			"sub_users": gin.H{"list": subUsers, "total": subTotal, "page": page, "page_size": pageSize},
+		},
+	})
+}

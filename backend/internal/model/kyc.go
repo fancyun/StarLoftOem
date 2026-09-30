@@ -42,14 +42,14 @@ type KybEnterprise struct {
 	CreditCode       string     `json:"credit_code" gorm:"size:20;not null"`                       // 统一社会信用代码
 	LegalName        string     `json:"legal_name,omitempty" gorm:"size:50"`                       // 法人姓名（后台人工实名不填写）
 	LegalIDCard      string     `json:"legal_id_card,omitempty" gorm:"size:18"`                    // 法人身份证号（后台人工实名不填写）
-	Source           int        `json:"source" gorm:"type:tinyint;not null;default:0"`             // 来源：0-自助 1-后台人工
-	AdminID          int64      `json:"admin_id,omitempty" gorm:"index"`                           // 后台人工实名操作的管理员ID
+	Source           int        `json:"source" gorm:"type:tinyint;not null;default:0"`             // 来源：0-自助 1-后台人工 2-用户提交人工审核
+	AdminID          int64      `json:"admin_id,omitempty" gorm:"index"`                           // 后台人工实名/人工审核操作的管理员ID
 	FourFactorStatus int        `json:"four_factor_status" gorm:"type:tinyint;not null;default:0"` // 工商四要素核验：0-待核验 1-通过 2-未通过
 	FourFactorData   string     `json:"four_factor_data,omitempty" gorm:"type:text"`               // 四要素核验结果数据（JSON）
 	UpToken          string     `json:"up_token,omitempty" gorm:"size:100"`                        // 法人扫脸上游token
 	UpBizID          string     `json:"up_biz_id,omitempty" gorm:"size:50;index"`                  // 法人扫脸上游biz_id
 	UpRequestID      string     `json:"up_request_id,omitempty" gorm:"size:50"`                    // 法人扫脸上游request_id
-	Status           int        `json:"status" gorm:"type:tinyint;not null;default:0;index"`       // 0-待四要素 1-待法人扫脸 2-通过 3-未通过
+	Status           int        `json:"status" gorm:"type:tinyint;not null;default:0;index"`       // 0-待四要素 1-待法人扫脸 2-通过 3-未通过 4-待人工审核
 	ResultCode       string     `json:"result_code,omitempty" gorm:"size:20"`                      // 上游结果码
 	ResultMessage    string     `json:"result_message,omitempty" gorm:"size:255"`                  // 结果消息
 	ResultData       string     `json:"result_data,omitempty" gorm:"type:text"`                    // 结果完整数据（JSON）

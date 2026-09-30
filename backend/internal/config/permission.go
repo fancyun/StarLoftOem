@@ -16,11 +16,12 @@ type PermissionSpec struct {
 	Writable bool
 }
 
-// 权限分组名（与后台一级分区一致）
+// 权限分组名（与后台一级分区一致；「运维审计」为独立授权分组，页面仍挂在平台管理分区下）
 const (
 	PermissionGroupSys = "平台管理"
 	PermissionGroupSMS = "短信服务"
 	PermissionGroupFV  = "人脸核验"
+	PermissionGroupOps = "运维审计"
 )
 
 // PermissionCatalog 全部后台权限模块（勾选项）。模块权限码常量见 model/permission.go；
@@ -47,12 +48,20 @@ func PermissionCatalog() []PermissionSpec {
 		{model.PermissionFvRecords, PermissionGroupFV, "认证记录", true},
 		{model.PermissionFvPacks, PermissionGroupFV, "资源包管理", true},
 		{model.PermissionFvProductConfig, PermissionGroupFV, "产品配置", true},
+
+		{model.PermissionOpsLogs, PermissionGroupOps, "日志与审计", false},
+		{model.PermissionOpsNotify, PermissionGroupOps, "通知重试", true},
+		{model.PermissionOpsMonitor, PermissionGroupOps, "系统监控", false},
+		{model.PermissionOpsUserPacks, PermissionGroupOps, "用户资源包", false},
+		{model.PermissionOpsAPIKeys, PermissionGroupOps, "API 密钥", false},
+		{model.PermissionOpsUploads, PermissionGroupOps, "上传文件", false},
+		{model.PermissionOpsPromoters, PermissionGroupOps, "推广归属", false},
 	}
 }
 
 // GroupWildcards 分组通配权限码（持有即拥有该分组全部读/写权限），顺序与后台分区一致
 func GroupWildcards() []string {
-	return []string{model.PermissionSysGroup, model.PermissionSmsGroup, model.PermissionFvGroup}
+	return []string{model.PermissionSysGroup, model.PermissionSmsGroup, model.PermissionFvGroup, model.PermissionOpsGroup}
 }
 
 // PermissionCodes 全部合法权限码集合：读权限码 + 可写模块的写权限码 + 分组通配码（用于归一化时过滤未知码）
@@ -101,7 +110,7 @@ func ParsePermissions(perms string) []string {
 
 // HasPermission 判断权限串是否包含指定权限码。三类 token 的匹配规则：
 //   - `all`：覆盖一切；
-//   - 分组通配码（sys / sms / fv）：覆盖同前缀的全部读/写权限码（`sms` 覆盖 `sms.signs` 与 `sms.signs.write`）；
+//   - 分组通配码（sys / sms / fv / ops）：覆盖同前缀的全部读/写权限码（`sms` 覆盖 `sms.signs` 与 `sms.signs.write`）；
 //   - 写权限码 `<模块>.write`：同时满足该模块的读权限码（写隐含读，能改必能看）。
 //
 // 注意：通配判定只对一级 token 生效，避免读码 `sys.admins` 被当成通配而越权覆盖 `sys.admins.write`。

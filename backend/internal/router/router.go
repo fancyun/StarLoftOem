@@ -224,6 +224,7 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 		authService,
 		rt,
 		cfg.JWT.AdminSecret,
+		cfg.MediaDir,
 	)
 
 	callbackHandler := handler.NewCallbackHandler(
@@ -237,6 +238,9 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 	dashboardHandler := handler.NewDashboardHandler(db)
 	kybAdminHandler := handler.NewKybAdminHandler(authService)
 	uploadHandler := handler.NewUploadHandler(cfg, uploadRepo, promotionService.SiteHosts)
+	logHandler := handler.NewAdminLogHandler(loginLogRepo, cfg.Log.Dir)
+	opsHandler := handler.NewAdminOpsHandler(db, notifyRepo, notifyService, cfg)
+	assetHandler := handler.NewAdminAssetHandler(repository.NewUserPackRepository(db), apiRepo, uploadRepo)
 
 	// 路由注册（按前端分为三组）
 
@@ -278,6 +282,7 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 			// 企业实名（Web，kyb）
 			auth.GET("/kyb/status", authHandler.GetKybStatus)
 			auth.POST("/kyb", authHandler.StartKybAuthForWeb)
+			auth.POST("/kyb/manual", authHandler.SubmitKybManual)
 			auth.GET("/records", authHandler.GetUserAuthRecords)
 			auth.GET("/stats/calls", authHandler.GetUserAuthCallStats)
 			auth.POST("/recharge", authHandler.CreateRecharge)
@@ -366,6 +371,7 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 			// 企业实名记录（kyb）与个人实名记录（kyc）管理
 			adminAuth.GET("/kyb", kybAdminHandler.ListKybRecords)
 			adminAuth.POST("/kyb/verify", kybAdminHandler.VerifyKyb)
+			adminAuth.POST("/kyb/review", kybAdminHandler.ReviewKybManual)
 			adminAuth.GET("/kyc", kybAdminHandler.ListKycPersonalRecords)
 			adminAuth.PUT("/users/:id/status", adminHandler.UpdateUserStatus)
 			// 账户实名两档的用户定向定价（覆盖平台价；人脸核验/短信的定向定价见产品配置页接口）
@@ -380,6 +386,25 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 
 			// 平台配置：第三方密钥（系统库 setting）与产品配置（各产品库 product_config）
 			adminAuth.GET("/settings", settingHandler.GetSettings)
+			// 日志与审计（ops.logs）
+			adminAuth.GET("/login-logs/users", logHandler.ListUserLoginLogs)
+			adminAuth.GET("/login-logs/admins", logHandler.ListAdminLoginLogs)
+			adminAuth.GET("/logs/files", logHandler.ListLogFiles)
+			adminAuth.GET("/logs/files/:name", logHandler.TailLogFile)
+			// 运维可观测（ops.monitor / ops.notify）；业务指标挂 /admin/stats 前缀，沿用 sys.dashboard 权限
+			adminAuth.GET("/system/monitor", opsHandler.GetSystemMonitor)
+			adminAuth.GET("/stats/business", opsHandler.GetBusinessStats)
+			adminAuth.GET("/notify-records", opsHandler.ListNotifyRecords)
+			adminAuth.POST("/notify-records/retry", opsHandler.RetryNotifyRecord)
+			// 用户资产与密钥（ops.user_packs / ops.api_keys / ops.uploads）
+			adminAuth.GET("/user-packs", assetHandler.ListUserPacks)
+			adminAuth.GET("/api-keys", assetHandler.ListAPIKeys)
+			adminAuth.GET("/uploads", assetHandler.ListUploads)
+			// 推广归属（ops.promoters）
+			adminAuth.GET("/promoters", promotionHandler.AdminPromoters)
+			adminAuth.GET("/promoters/:type/:id", promotionHandler.AdminPromoterDetail)
+			// 认证记录媒体（沿用 fv.records 读权限：能看详情即可看照片/视频）
+			adminAuth.GET("/records/:id/media", adminHandler.GetAuthRecordMedia)
 			adminAuth.PUT("/settings", settingHandler.UpsertSetting)
 			adminAuth.DELETE("/settings", settingHandler.DeleteSetting)
 			adminAuth.GET("/product-config", settingHandler.GetProductConfigs)

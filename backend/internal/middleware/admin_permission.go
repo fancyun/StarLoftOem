@@ -50,6 +50,16 @@ var adminRouteRules = []adminRouteRule{
 	// 人脸核验
 	{"/admin/records", []string{model.PermissionFvRecords}},
 	{"/admin/packs", []string{model.PermissionFvPacks}},
+	// 运维审计（独立分组 ops）
+	{"/admin/login-logs", []string{model.PermissionOpsLogs}},
+	{"/admin/logs", []string{model.PermissionOpsLogs}},
+	{"/admin/system", []string{model.PermissionOpsMonitor}},
+	{"/admin/notify-records", []string{model.PermissionOpsNotify}},
+	// 用户已购资源包：可经运维审计权限查看，或由对应产品的资源包管理权限查看（页面已归入 fv/sms 分区）
+	{"/admin/user-packs", []string{model.PermissionOpsUserPacks, model.PermissionFvPacks, model.PermissionSmsPacks}},
+	{"/admin/api-keys", []string{model.PermissionOpsAPIKeys}},
+	{"/admin/uploads", []string{model.PermissionOpsUploads}},
+	{"/admin/promoters", []string{model.PermissionOpsPromoters}},
 }
 
 // adminPermissionWhitelist 登录态即可访问、无需额外权限的后台路由（本人信息与改密）

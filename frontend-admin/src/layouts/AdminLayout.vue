@@ -176,6 +176,17 @@ const sections: Record<string, { label: string; defaultPath: string; menu: any[]
       { type: 'link', to: '/sys/dashboard', label: '数据统计', icon: 'chart', permission: 'sys.dashboard' },
       {
         type: 'group',
+        label: '运维管理',
+        icon: 'server',
+        children: [
+          { to: '/sys/monitor', label: '系统监控', permission: 'ops.monitor' },
+          { to: '/sys/notify', label: '通知重试', permission: 'ops.notify' },
+          { to: '/sys/logs/login', label: '登录日志', permission: 'ops.logs' },
+          { to: '/sys/logs/files', label: '系统日志', permission: 'ops.logs' }
+        ]
+      },
+      {
+        type: 'group',
         label: '用户管理',
         icon: 'user',
         children: [
@@ -200,7 +211,17 @@ const sections: Record<string, { label: string; defaultPath: string; menu: any[]
         icon: 'promotion',
         children: [
           { to: '/sys/commissions', label: '提成记录', permission: 'sys.aff' },
-          { to: '/sys/promotion/withdraws', label: '提现审核', permission: 'sys.aff' }
+          { to: '/sys/promotion/withdraws', label: '提现审核', permission: 'sys.aff' },
+          { to: '/sys/promoters', label: '推广归属', permission: 'ops.promoters' }
+        ]
+      },
+      {
+        type: 'group',
+        label: '用户资产',
+        icon: 'packs',
+        children: [
+          { to: '/sys/api-keys', label: 'API 密钥', permission: 'ops.api_keys' },
+          { to: '/sys/uploads', label: '上传文件', permission: 'ops.uploads' }
         ]
       },
       { type: 'link', to: '/sys/sales', label: '销售业绩', icon: 'promotion', permission: 'sys.sales' },
@@ -218,6 +239,7 @@ const sections: Record<string, { label: string; defaultPath: string; menu: any[]
       { type: 'link', to: '/sms/records', label: '发送记录', icon: 'records', permission: 'sms.records' },
       { type: 'link', to: '/sms/replies', label: '短信回复', icon: 'reply', permission: 'sms.replies' },
       { type: 'link', to: '/sms/packs', label: '资源包管理', icon: 'packs', permission: 'sms.packs' },
+      { type: 'link', to: '/sms/user-packs', label: '用户资源包', icon: 'packs', permission: 'sms.packs' },
       { type: 'link', to: '/sms/product-config', label: '产品配置', icon: 'config', permission: 'sms.product_config' }
     ]
   },
@@ -228,6 +250,7 @@ const sections: Record<string, { label: string; defaultPath: string; menu: any[]
       { type: 'link', to: '/fv/stats', label: '数据统计', icon: 'chart', permission: 'fv.stats' },
       { type: 'link', to: '/fv/records', label: '认证记录', icon: 'orders', permission: 'fv.records' },
       { type: 'link', to: '/fv/packs', label: '资源包管理', icon: 'packs', permission: 'fv.packs' },
+      { type: 'link', to: '/fv/user-packs', label: '用户资源包', icon: 'packs', permission: 'fv.packs' },
       { type: 'link', to: '/fv/product-config', label: '产品配置', icon: 'config', permission: 'fv.product_config' }
     ]
   }
@@ -280,6 +303,7 @@ const iconPaths: Record<string, string> = {
   orders: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
   packs: '<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/>',
   promotion: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>',
+  server: '<rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><line x1="6" y1="6.5" x2="6.01" y2="6.5"/><line x1="6" y1="17.5" x2="6.01" y2="17.5"/>',
   config: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>'
 }
 

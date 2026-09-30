@@ -27,4 +27,9 @@ func (v *TencentOcrVerifier) Verify(companyName, creditCode, legalName, legalIDC
 	return res, nil
 }
 
+// Available 腾讯云 OCR 客户端是否已构建（账号密钥齐备）
+func (v *TencentOcrVerifier) Available() bool {
+	return v.client != nil
+}
+
 var _ EnterpriseVerifier = (*TencentOcrVerifier)(nil)

@@ -34,6 +34,8 @@ type EnterpriseVerifyResult struct {
 // EnterpriseVerifier 企业工商四要素核验 provider（腾讯云 OCR / 阿里云可切换）
 type EnterpriseVerifier interface {
 	Verify(companyName, creditCode, legalName, legalIDCard string) (*EnterpriseVerifyResult, error)
+	// Available 该 provider 是否已配置可用（凭据/接口地址齐备）；不可用时企业实名走人工审核
+	Available() bool
 }
 
 // SmsPushVerifier 上游短信推送（回执/回复/签名与模板状态）的签名校验器：

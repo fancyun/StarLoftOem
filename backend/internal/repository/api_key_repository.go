@@ -123,3 +123,68 @@ func (r *ApiKeyRepository) DeleteByID(id, userID int64) error {
 	_, err := r.db.Exec(`DELETE FROM `+model.SysDB+`.api WHERE id = ? AND user_id = ?`, id, userID)
 	return err
 }
+
+// ApiKeyRow 后台密钥列表行（绝不包含 api_secret，含归属用户信息）
+type ApiKeyRow struct {
+	ID         int64     `json:"id"`
+	UserID     int64     `json:"user_id"`
+	Phone      string    `json:"phone"`
+	Username   string    `json:"username"`
+	Name       string    `json:"name"`
+	APIKey     string    `json:"api_key"`
+	Permission string    `json:"permission"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// ListPage 后台分页查询全平台 API 密钥（只读）。
+// 查询列显式列出且不含 api_secret：从查询层断掉密钥明文外泄路径。
+func (r *ApiKeyRepository) ListPage(userID *int64, keyword, startDate, endDate string, page, pageSize int) ([]*ApiKeyRow, int64, error) {
+	where := "1=1"
+	args := []interface{}{}
+	if userID != nil {
+		where += " AND k.user_id = ?"
+		args = append(args, *userID)
+	}
+	if keyword != "" {
+		like := "%" + keyword + "%"
+		where += " AND (k.api_key LIKE ? OR k.name LIKE ?)"
+		args = append(args, like, like)
+	}
+	if startDate != "" {
+		where += " AND k.created_at >= ?"
+		args = append(args, startDate+" 00:00:00")
+	}
+	if endDate != "" {
+		where += " AND k.created_at <= ?"
+		args = append(args, endDate+" 23:59:59")
+	}
+
+	var total int64
+	countSQL := `SELECT COUNT(*) FROM ` + model.SysDB + `.api k LEFT JOIN ` + model.SysDB + `.user u ON u.id = k.user_id WHERE ` + where
+	if err := r.db.QueryRow(countSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	query := `SELECT k.id, k.user_id, COALESCE(u.phone,''), COALESCE(u.username,''),
+			k.name, k.api_key, k.permission, k.created_at, k.updated_at
+		FROM ` + model.SysDB + `.api k
+		LEFT JOIN ` + model.SysDB + `.user u ON u.id = k.user_id
+		WHERE ` + where + ` ORDER BY k.id DESC LIMIT ? OFFSET ?`
+	rows, err := r.db.Query(query, append(append([]interface{}{}, args...), pageSize, (page-1)*pageSize)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	list := make([]*ApiKeyRow, 0, pageSize)
+	for rows.Next() {
+		row := &ApiKeyRow{}
+		if err := rows.Scan(&row.ID, &row.UserID, &row.Phone, &row.Username, &row.Name, &row.APIKey,
+			&row.Permission, &row.CreatedAt, &row.UpdatedAt); err != nil {
+			return nil, 0, err
+		}
+		list = append(list, row)
+	}
+	return list, total, rows.Err()
+}

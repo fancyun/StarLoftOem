@@ -33,6 +33,11 @@ func NewAliyunEnterpriseVerifier(endpoint, appCode string) *AliyunEnterpriseVeri
 	}
 }
 
+// Available 阿里云云市场「企业工商四要素核验」接口地址与 AppCode 是否齐备
+func (v *AliyunEnterpriseVerifier) Available() bool {
+	return v.endpoint != "" && v.appCode != ""
+}
+
 // Verify 核验企业名称、统一社会信用代码、法人姓名、法人身份证号四要素一致性
 func (v *AliyunEnterpriseVerifier) Verify(companyName, creditCode, legalName, legalIDCard string) (*EnterpriseVerifyResult, error) {
 	if v.endpoint == "" || v.appCode == "" {

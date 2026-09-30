@@ -48,6 +48,54 @@
           </div>
         </div>
       </el-card>
+
+      <el-card class="stat-card">
+        <div class="stat-content">
+          <div class="stat-icon admins">
+            <el-icon><UserFilled /></el-icon>
+          </div>
+          <div class="stat-info">
+            <div class="stat-value">{{ business.admins }}</div>
+            <div class="stat-label">后台账号数</div>
+          </div>
+        </div>
+      </el-card>
+
+      <el-card class="stat-card">
+        <div class="stat-content">
+          <div class="stat-icon settings">
+            <el-icon><Setting /></el-icon>
+          </div>
+          <div class="stat-info">
+            <div class="stat-value">{{ business.settingItems }}</div>
+            <div class="stat-label">系统配置项</div>
+          </div>
+        </div>
+      </el-card>
+
+      <el-card class="stat-card">
+        <div class="stat-content">
+          <div class="stat-icon notify">
+            <el-icon><Bell /></el-icon>
+          </div>
+          <div class="stat-info">
+            <div class="stat-value">{{ business.notifyPending }}</div>
+            <div class="stat-label">待重推通知</div>
+          </div>
+        </div>
+      </el-card>
+
+      <el-card class="stat-card">
+        <div class="stat-content">
+          <div class="stat-icon abandoned">
+            <el-icon><WarningFilled /></el-icon>
+          </div>
+          <div class="stat-info">
+            <div class="stat-value danger">{{ business.notifyAbandoned }}</div>
+            <div class="stat-label">已放弃通知</div>
+          </div>
+        </div>
+      </el-card>
     </div>
 
     <el-row :gutter="20" class="chart-row">
@@ -111,11 +159,20 @@ const stats = ref({
 const recentOrders = ref([])
 const revenueChartRef = ref()
 
+// 业务规模指标（后台账号数/配置项数/通知重试积压）
+const business = ref({
+  admins: 0,
+  settingItems: 0,
+  notifyPending: 0,
+  notifyAbandoned: 0
+})
+
 let revenueChartInstance: ReturnType<typeof echarts.init> | null = null
 let disposed = false
 
 onMounted(async () => {
   await loadStats()
+  await loadBusinessStats()
   await loadCharts()
   await loadRecentOrders()
 })
@@ -138,6 +195,21 @@ const loadStats = async () => {
   } catch (error: any) {
     console.error('加载统计数据失败:', error)
     ElMessage.error('加载统计数据失败')
+  }
+}
+
+const loadBusinessStats = async () => {
+  try {
+    const response: any = await adminAPI.getBusinessStats()
+    business.value = {
+      admins: response.admins || 0,
+      settingItems: response.setting_items || 0,
+      notifyPending: response.notify_pending || 0,
+      notifyAbandoned: response.notify_abandoned || 0
+    }
+  } catch (error: any) {
+    console.error('加载业务指标失败:', error)
+    ElMessage.error('加载业务指标失败')
   }
 }
 
@@ -266,6 +338,10 @@ const getStatusText = (status: number) => {
 .stat-icon.orders  { color: #FF9D00; background: #FFF7E8; }
 .stat-icon.revenue { color: var(--color-success); background: var(--color-success-light); }
 .stat-icon.monthly { color: #F54A45; background: #FFECE8; }
+.stat-icon.admins    { color: #006EFF; background: #E8F3FF; }
+.stat-icon.settings  { color: #1CD5C7; background: #DFF8F5; }
+.stat-icon.notify    { color: var(--color-warning); background: var(--color-warning-light); }
+.stat-icon.abandoned { color: var(--color-danger); background: var(--color-danger-light); }
 
 .stat-info {
   flex: 1;
@@ -277,6 +353,10 @@ const getStatusText = (status: number) => {
   font-weight: 700;
   color: var(--text-primary);
   line-height: 1.2;
+}
+
+.stat-value.danger {
+  color: var(--color-danger);
 }
 
 .stat-label {

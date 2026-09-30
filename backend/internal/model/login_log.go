@@ -14,7 +14,7 @@ type UserLoginLog struct {
 	UserAgent  string    `json:"user_agent,omitempty" gorm:"size:500"`                  // 浏览器UA
 	Status     int       `json:"status" gorm:"type:tinyint;not null;default:1"`         // 1-成功 0-失败
 	FailReason string    `json:"fail_reason,omitempty" gorm:"size:255"`                 // 失败原因
-	CreatedAt  time.Time `json:"created_at" gorm:"autoCreateTime"`
+	CreatedAt  time.Time `json:"created_at" gorm:"autoCreateTime;index:idx_created_at"`
 }
 
 // AdminLoginLog 管理员登录记录（系统库）
@@ -28,5 +28,5 @@ type AdminLoginLog struct {
 	UserAgent  string    `json:"user_agent,omitempty" gorm:"size:500"`          // 浏览器UA
 	Status     int       `json:"status" gorm:"type:tinyint;not null;default:1"` // 1-成功 0-失败
 	FailReason string    `json:"fail_reason,omitempty" gorm:"size:255"`         // 失败原因
-	CreatedAt  time.Time `json:"created_at" gorm:"autoCreateTime"`
+	CreatedAt  time.Time `json:"created_at" gorm:"autoCreateTime;index:idx_created_at"`
 }

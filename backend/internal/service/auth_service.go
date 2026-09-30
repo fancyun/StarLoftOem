@@ -695,6 +695,12 @@ func (s *AuthService) GetLatestKycRecord(userID int64) (*model.KycPersonal, erro
 	return s.kycRecordRepo.GetLatestByUserID(userID)
 }
 
+// KybSelfServiceAvailable 企业实名自助核验（工商四要素 + 法人扫脸）是否可用。
+// 四要素 provider 未配置或凭据缺失时为 false，此时企业实名改走人工审核。
+func (s *AuthService) KybSelfServiceAvailable() bool {
+	return s.enterpriseVerifier != nil && s.enterpriseVerifier.Available()
+}
+
 // StartKybAuth 发起企业实名（自助）：
 // 流程：1) 营业执照四要素核验（腾讯云 OCR VerifyBizLicenseEnterprise4，失败即终止并占用免费次数）；
 //  2. 四要素通过后由法人本人进行人脸核身（腾讯云慧眼 DetectAuth），返回 H5 核身地址。
@@ -709,8 +715,8 @@ func (s *AuthService) StartKybAuth(
 	if user, err := s.userRepo.GetUserByID(userID); err == nil && user.RealnameStatus == model.RealnameEnterprise {
 		return nil, errors.New("已企业实名，无需重复认证")
 	}
-	if s.enterpriseVerifier == nil {
-		return nil, errors.New("营业执照四要素核验服务未配置")
+	if !s.KybSelfServiceAvailable() {
+		return nil, errors.New("未配置企业信息核验能力，请提交人工审核")
 	}
 	if s.faceProvider == nil {
 		return nil, errors.New("人脸核身服务未配置")
@@ -880,9 +886,83 @@ func (s *AuthService) AdminCreateKybManual(userID int64, companyName, creditCode
 	return nil
 }
 
-// ListKybRecords 企业实名记录列表（管理后台）
-func (s *AuthService) ListKybRecords(page, pageSize int) ([]*model.KybEnterprise, int64, error) {
-	return s.kybRepo.GetKybRecords(page, pageSize)
+// SubmitKybManualReview 提交企业实名人工审核申请（未配置工商四要素核验能力时使用）：
+// 同一用户已有待审核记录则覆盖更新，否则新建（source=2, status=4）。
+// 人工审核无上游核验/扫脸成本，不计费、不占用自助免费次数。
+func (s *AuthService) SubmitKybManualReview(userID int64, companyName, creditCode, legalName, legalIDCard string) error {
+	if user, err := s.userRepo.GetUserByID(userID); err == nil && user.RealnameStatus == model.RealnameEnterprise {
+		return errors.New("已企业实名，无需重复认证")
+	}
+
+	// 已有待审核申请：覆盖更新，避免同一用户堆积多条待审记录
+	pending, err := s.kybRepo.GetPendingManualByUserID(userID)
+	if err != nil {
+		return fmt.Errorf("查询待审核申请失败: %w", err)
+	}
+	if pending != nil {
+		if err := s.kybRepo.UpdateManualSubmission(pending.ID, companyName, creditCode, legalName, legalIDCard); err != nil {
+			return fmt.Errorf("更新人工审核申请失败: %w", err)
+		}
+		pending.CompanyName, pending.CreditCode = companyName, creditCode
+		pending.LegalName, pending.LegalIDCard = legalName, legalIDCard
+		audit.KybRecord("kyb_manual_submit", "console", pending, audit.KV("resubmit", "true"))
+		return nil
+	}
+
+	rec := &model.KybEnterprise{
+		UserID:      userID,
+		BizNo:       generateRecordBizNo(userID),
+		CompanyName: companyName,
+		CreditCode:  creditCode,
+		LegalName:   legalName,
+		LegalIDCard: legalIDCard,
+		Source:      2, // 用户提交人工审核
+		Status:      4, // 待人工审核
+	}
+	if err := s.kybRepo.Create(rec); err != nil {
+		return fmt.Errorf("提交人工审核申请失败: %w", err)
+	}
+	audit.KybRecord("kyb_manual_submit", "console", rec)
+	return nil
+}
+
+// ReviewKybManual 后台人工审核企业实名申请：通过即为企业开通实名并落地 user 表，驳回写入原因。
+// 仅「待人工审核（status=4）」的记录可审核。
+func (s *AuthService) ReviewKybManual(recordID int64, approve bool, reason string, adminID int64) error {
+	rec, err := s.kybRepo.GetByID(recordID)
+	if err != nil || rec == nil {
+		return errors.New("企业实名记录不存在")
+	}
+	if rec.Status != 4 {
+		return errors.New("该记录不在待人工审核状态")
+	}
+
+	if approve {
+		now := time.Now()
+		if err := s.kybRepo.ReviewManual(recordID, 2, "0", "人工审核通过", &now, adminID); err != nil {
+			return fmt.Errorf("写入审核结果失败: %w", err)
+		}
+		s.applyRealnameStatus(rec.UserID, model.RealnameEnterprise, rec.CompanyName, rec.CreditCode)
+		rec.Status, rec.ResultCode, rec.ResultMessage, rec.AdminID = 2, "0", "人工审核通过", adminID
+		audit.KybRecord("kyb_land", "admin_review", rec, audit.KV("admin_id", adminID))
+		return nil
+	}
+
+	msg := strings.TrimSpace(reason)
+	if msg == "" {
+		msg = "人工审核未通过"
+	}
+	if err := s.kybRepo.ReviewManual(recordID, 3, "MANUAL_REJECT", msg, nil, adminID); err != nil {
+		return fmt.Errorf("写入审核结果失败: %w", err)
+	}
+	rec.Status, rec.ResultCode, rec.ResultMessage, rec.AdminID = 3, "MANUAL_REJECT", msg, adminID
+	audit.KybRecord("kyb_land", "admin_review", rec, audit.KV("admin_id", adminID))
+	return nil
+}
+
+// ListKybRecords 企业实名记录列表（管理后台）；status<0 表示不限
+func (s *AuthService) ListKybRecords(status, page, pageSize int) ([]*model.KybEnterprise, int64, error) {
+	return s.kybRepo.GetKybRecords(status, page, pageSize)
 }
 
 // ListKycPersonalRecords 后台个人实名记录列表（分页，status=-1 全部）
@@ -1577,7 +1657,7 @@ func (s *AuthService) NotifyDownstream(record *model.AuthRecord) {
 	resp, err := http.Post(record.NotifyURL, "application/json", bytes.NewReader(jsonData))
 	if err != nil {
 		log.Printf("通知下游失败 [record_id=%d, url=%s]: %v", record.ID, record.NotifyURL, err)
-		s.notifySvc.Enqueue("fv_result", record.ID, record.UserID, record.NotifyURL, string(jsonData))
+		s.notifySvc.Enqueue("fv_result", record.BizNo, record.ID, record.UserID, record.NotifyURL, string(jsonData))
 		return
 	}
 	defer resp.Body.Close()
@@ -1586,7 +1666,7 @@ func (s *AuthService) NotifyDownstream(record *model.AuthRecord) {
 		log.Printf("通知下游成功 [record_id=%d, url=%s, status=%d]", record.ID, record.NotifyURL, resp.StatusCode)
 	} else {
 		log.Printf("通知下游返回异常 [record_id=%d, url=%s, status=%d]", record.ID, record.NotifyURL, resp.StatusCode)
-		s.notifySvc.Enqueue("fv_result", record.ID, record.UserID, record.NotifyURL, string(jsonData))
+		s.notifySvc.Enqueue("fv_result", record.BizNo, record.ID, record.UserID, record.NotifyURL, string(jsonData))
 	}
 }
 

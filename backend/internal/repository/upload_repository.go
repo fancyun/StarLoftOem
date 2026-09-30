@@ -38,3 +38,64 @@ func (r *UploadRepository) OwnedBy(userID int64, filePath string) (bool, error) 
 	}
 	return n > 0, nil
 }
+
+// UploadRow 后台上传文件列表行（含归属用户信息）
+type UploadRow struct {
+	ID        int64     `json:"id"`
+	UserID    int64     `json:"user_id"`
+	Phone     string    `json:"phone"`
+	Username  string    `json:"username"`
+	FilePath  string    `json:"file_path"`
+	FileURL   string    `json:"file_url"`
+	FileSize  int64     `json:"file_size"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ListPage 后台分页查询上传文件登记（filePath 为路径模糊匹配）
+func (r *UploadRepository) ListPage(userID *int64, filePath, startDate, endDate string, page, pageSize int) ([]*UploadRow, int64, error) {
+	where := "1=1"
+	args := []interface{}{}
+	if userID != nil {
+		where += " AND f.user_id = ?"
+		args = append(args, *userID)
+	}
+	if filePath != "" {
+		where += " AND f.file_path LIKE ?"
+		args = append(args, "%"+filePath+"%")
+	}
+	if startDate != "" {
+		where += " AND f.created_at >= ?"
+		args = append(args, startDate+" 00:00:00")
+	}
+	if endDate != "" {
+		where += " AND f.created_at <= ?"
+		args = append(args, endDate+" 23:59:59")
+	}
+
+	var total int64
+	if err := r.db.QueryRow("SELECT COUNT(*) FROM "+model.SysDB+".upload_file f WHERE "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	query := `SELECT f.id, f.user_id, COALESCE(u.phone,''), COALESCE(u.username,''),
+			f.file_path, f.file_url, f.file_size, f.created_at
+		FROM ` + model.SysDB + `.upload_file f
+		LEFT JOIN ` + model.SysDB + `.user u ON u.id = f.user_id
+		WHERE ` + where + ` ORDER BY f.id DESC LIMIT ? OFFSET ?`
+	rows, err := r.db.Query(query, append(append([]interface{}{}, args...), pageSize, (page-1)*pageSize)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	list := make([]*UploadRow, 0, pageSize)
+	for rows.Next() {
+		row := &UploadRow{}
+		if err := rows.Scan(&row.ID, &row.UserID, &row.Phone, &row.Username, &row.FilePath, &row.FileURL,
+			&row.FileSize, &row.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		list = append(list, row)
+	}
+	return list, total, rows.Err()
+}

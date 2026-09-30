@@ -81,6 +81,21 @@
         <el-descriptions-item label="结果信息">
           {{ authDetail.result_message || '-' }}
         </el-descriptions-item>
+        <el-descriptions-item label="姓名">{{ authDetail.name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="身份证号">{{ authDetail.id_card || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="归属用户手机号">{{ authDetail.user_phone || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="产品">
+          <el-tag v-if="authDetail.product">{{ authDetail.product }}</el-tag>
+          <span v-else>-</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="API 密钥ID">{{ authDetail.api_id || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="上游反查次数">
+          {{ authDetail.up_query_count }} / {{ authDetail.up_query_limit }}
+        </el-descriptions-item>
+        <el-descriptions-item label="最佳图已领取">{{ authDetail.best_img_fetched ? '是' : '否' }}</el-descriptions-item>
+        <el-descriptions-item label="媒体过期时间">
+          {{ authDetail.media_expire_at ? formatDateTime(authDetail.media_expire_at) : '-' }}
+        </el-descriptions-item>
         <el-descriptions-item label="回调次数">{{ authDetail.notify_times }}</el-descriptions-item>
         <el-descriptions-item label="回调状态">{{ getNotifyStatusText(authDetail.notify_status) }}</el-descriptions-item>
         <el-descriptions-item label="是否退款">{{ authDetail.is_refunded ? '是' : '否' }}</el-descriptions-item>
@@ -98,14 +113,41 @@
           request_id={{ authDetail.up_request_id || '-' }}
         </el-descriptions-item>
       </el-descriptions>
+
+      <!-- 认证媒体（照片/视频按需拉取，已过清理期则不存在） -->
+      <div class="media-block" v-if="canViewMedia">
+        <div class="media-head">
+          <span class="media-title">认证媒体</span>
+          <div class="media-actions">
+            <el-button size="small" :loading="loadingImage" @click="loadImage">查看照片</el-button>
+            <el-button v-if="!videoMissing" size="small" :loading="loadingVideo" @click="loadVideo">查看视频</el-button>
+            <span v-if="videoMissing" class="muted">无视频</span>
+          </div>
+        </div>
+        <div class="media-body">
+          <el-image
+            v-if="mediaImageUrl"
+            :src="mediaImageUrl"
+            fit="contain"
+            class="media-img"
+            :preview-src-list="[mediaImageUrl]"
+            preview-teleported
+          >
+            <template #placeholder><div class="media-tip">加载中…</div></template>
+            <template #error><div class="media-tip">加载失败</div></template>
+          </el-image>
+          <span v-else-if="imageMissing" class="muted">无照片</span>
+          <video v-if="mediaVideoUrl" :src="mediaVideoUrl" controls class="media-video"></video>
+        </div>
+      </div>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, reactive, computed } from 'vue'
+import { ref, onMounted, reactive, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { adminAPI } from '@/api'
+import { adminAPI, loadAuthFile } from '@/api'
 import { useAdminStore } from '@/stores/admin'
 import { formatDateTime } from '@/utils/format'
 
@@ -170,6 +212,7 @@ const getNotifyStatusText = (status: number) => {
 const viewAuthDetail = async (row: any) => {
   authDetailVisible.value = true
   authDetail.value = row
+  resetMedia()
   try {
     const detail: any = await adminAPI.getRecordDetail(row.id)
     authDetail.value = detail
@@ -177,6 +220,65 @@ const viewAuthDetail = async (row: any) => {
     // 详情请求失败时保留列表行数据展示
   }
 }
+
+// ===== 认证媒体（照片/视频需管理员 token 拉取；不存在时静默提示，不弹错误） =====
+const mediaImageUrl = ref('')
+const mediaVideoUrl = ref('')
+const loadingImage = ref(false)
+const loadingVideo = ref(false)
+const imageMissing = ref(false)
+const videoMissing = ref(false)
+// 媒体目录为空表示无留存媒体（已过清理期或未落盘）
+const canViewMedia = computed(() => !!authDetail.value?.media_dir)
+
+const revokeMediaUrls = () => {
+  if (mediaImageUrl.value) {
+    URL.revokeObjectURL(mediaImageUrl.value)
+    mediaImageUrl.value = ''
+  }
+  if (mediaVideoUrl.value) {
+    URL.revokeObjectURL(mediaVideoUrl.value)
+    mediaVideoUrl.value = ''
+  }
+}
+
+const resetMedia = () => {
+  revokeMediaUrls()
+  imageMissing.value = false
+  videoMissing.value = false
+  loadingImage.value = false
+  loadingVideo.value = false
+}
+
+const loadImage = async () => {
+  if (!authDetail.value) return
+  loadingImage.value = true
+  try {
+    mediaImageUrl.value = await loadAuthFile(`/admin/records/${authDetail.value.id}/media?kind=image`)
+    imageMissing.value = false
+  } catch {
+    imageMissing.value = true
+  } finally {
+    loadingImage.value = false
+  }
+}
+
+const loadVideo = async () => {
+  if (!authDetail.value) return
+  loadingVideo.value = true
+  try {
+    mediaVideoUrl.value = await loadAuthFile(`/admin/records/${authDetail.value.id}/media?kind=video`)
+  } catch {
+    // 无视频：隐藏视频入口并提示，不弹错误
+    videoMissing.value = true
+  } finally {
+    loadingVideo.value = false
+  }
+}
+
+watch(authDetailVisible, (visible) => {
+  if (!visible) resetMedia()
+})
 
 // 查询结果（调上游核对并按上游结果回写本地，与后台签名/模板同款）
 const queryAuthResult = async (row: any) => {
@@ -220,6 +322,62 @@ const queryAuthResult = async (row: any) => {
 
 .break-all {
   word-break: break-all;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.media-block {
+  margin-top: 16px;
+}
+
+.media-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.media-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.media-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.media-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  min-height: 80px;
+}
+
+.media-img {
+  max-width: 100%;
+  max-height: 50vh;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-soft);
+  cursor: zoom-in;
+}
+
+.media-video {
+  max-width: 100%;
+  max-height: 50vh;
+  border-radius: var(--radius-md);
+  background: #000;
+}
+
+.media-tip {
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
 .section-title {

@@ -118,6 +118,16 @@ export const userAPI = {
     return request.post('/kyb', data)
   },
 
+  // 提交企业实名人工审核申请（未配置工商四要素核验能力时使用）
+  submitKybManual: (data: {
+    company_name: string
+    credit_code: string
+    legal_name: string
+    legal_id_card: string
+  }) => {
+    return request.post('/kyb/manual', data)
+  },
+
   // 查询人脸核验认证记录（FV 认证订单）
   getFvRecords: (params: { page?: number; page_size?: number; status?: string }) => {
     return request.get('/records', { params })

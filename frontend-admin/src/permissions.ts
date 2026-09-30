@@ -5,13 +5,14 @@ export const PERMISSION_ALL = 'all'
 export const WRITE_SUFFIX = '.write'
 
 // 分组通配权限码列表（覆盖该分区全部读/写权限）
-export const GROUP_WILDCARD_LIST = ['sys', 'sms', 'fv']
+export const GROUP_WILDCARD_LIST = ['sys', 'sms', 'fv', 'ops']
 
 // 分组名 → 分组通配码
 export const GROUP_WILDCARDS: Record<string, string> = {
   平台管理: 'sys',
   短信服务: 'sms',
-  人脸核验: 'fv'
+  人脸核验: 'fv',
+  运维审计: 'ops'
 }
 
 // 通配码展示名
@@ -19,7 +20,8 @@ export const WILDCARD_LABELS: Record<string, string> = {
   [PERMISSION_ALL]: '全部权限',
   sys: '平台管理（全部）',
   sms: '短信服务（全部）',
-  fv: '人脸核验（全部）'
+  fv: '人脸核验（全部）',
+  ops: '运维审计（全部）'
 }
 
 export interface PermissionSpec {
@@ -51,7 +53,15 @@ export const PERMISSION_CATALOG: PermissionSpec[] = [
   { code: 'fv.stats', group: '人脸核验', label: '数据统计', writable: false },
   { code: 'fv.records', group: '人脸核验', label: '认证记录', writable: true },
   { code: 'fv.packs', group: '人脸核验', label: '资源包管理', writable: true },
-  { code: 'fv.product_config', group: '人脸核验', label: '产品配置', writable: true }
+  { code: 'fv.product_config', group: '人脸核验', label: '产品配置', writable: true },
+
+  { code: 'ops.logs', group: '运维审计', label: '日志与审计', writable: false },
+  { code: 'ops.notify', group: '运维审计', label: '通知重试', writable: true },
+  { code: 'ops.monitor', group: '运维审计', label: '系统监控', writable: false },
+  { code: 'ops.user_packs', group: '运维审计', label: '用户资源包', writable: false },
+  { code: 'ops.api_keys', group: '运维审计', label: 'API 密钥', writable: false },
+  { code: 'ops.uploads', group: '运维审计', label: '上传文件', writable: false },
+  { code: 'ops.promoters', group: '运维审计', label: '推广归属', writable: false }
 ]
 
 // 权限码 → 展示名（读码 = 模块名；写码 = 模块名（可修改）；另含通配码）
@@ -90,6 +100,12 @@ export const LANDING_ORDER: { path: string; code: string }[] = [
   { path: '/sys/commissions', code: 'sys.aff' },
   { path: '/sys/admins', code: 'sys.admins' },
   { path: '/sys/settings', code: 'sys.settings' },
+  { path: '/sys/monitor', code: 'ops.monitor' },
+  { path: '/sys/notify', code: 'ops.notify' },
+  { path: '/sys/logs/login', code: 'ops.logs' },
+  { path: '/sys/api-keys', code: 'ops.api_keys' },
+  { path: '/sys/uploads', code: 'ops.uploads' },
+  { path: '/sys/promoters', code: 'ops.promoters' },
   { path: '/sms/stats', code: 'sms.stats' },
   { path: '/sms/signs', code: 'sms.signs' },
   { path: '/sms/templates', code: 'sms.templates' },

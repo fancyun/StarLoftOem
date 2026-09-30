@@ -498,6 +498,35 @@ func (s *PromotionService) Profile(userID int64) (*PromotionProfile, error) {
 	return p, nil
 }
 
+// ListPromoters 后台推广商列表（referrerType 为空表示用户型推广与员工销售合并）
+func (s *PromotionService) ListPromoters(referrerType, keyword string, page, pageSize int) ([]*repository.PromoterRow, int64, error) {
+	return s.promotionRepo.ListPromoters(referrerType, keyword, page, pageSize)
+}
+
+// PromoterDetail 后台推广商详情（未命中返回 nil, nil）
+func (s *PromotionService) PromoterDetail(referrerType string, referrerID int64) (*repository.PromoterRow, error) {
+	return s.promotionRepo.GetPromoter(referrerType, referrerID)
+}
+
+// ReferrerInfo 按归属类型解析推介方展示名与手机号：user→用户表；staff→后台账号表（无手机号列）
+func (s *PromotionService) ReferrerInfo(referrerType string, referrerID int64) (string, string, error) {
+	switch referrerType {
+	case model.RefTypeReferrerStaff:
+		admin, err := s.adminRepo.GetAdminByID(referrerID)
+		if err != nil || admin == nil {
+			return "", "", err
+		}
+		return admin.Username, "", nil
+	case model.RefTypeReferrerUser:
+		user, err := s.userRepo.GetUserByID(referrerID)
+		if err != nil || user == nil {
+			return "", "", err
+		}
+		return user.Username, user.Phone, nil
+	}
+	return "", "", nil
+}
+
 // ListSubUsers 分页查询归属该推广方的下级用户（白名单字段，避免泄露证件号/余额等敏感信息）
 func (s *PromotionService) ListSubUsers(referrerType string, referrerID int64, page, pageSize int) ([]*repository.AffSubUser, int64, error) {
 	return s.userRepo.ListAffSubUsers(referrerType, referrerID, page, pageSize)

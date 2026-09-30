@@ -108,7 +108,7 @@
         </div>
 
         <!-- 状态 2：进行中（record_status=0/1，待四要素或待法人扫脸） -->
-        <div v-if="entRecordStatus === 0 || entRecordStatus === 1" class="processing-section">
+        <div v-if="!entManualReview && (entRecordStatus === 0 || entRecordStatus === 1)" class="processing-section">
           <el-icon class="processing-icon"><Clock /></el-icon>
           <h2>企业认证进行中</h2>
           <p v-if="entRecordStatus === 0">企业信息核验进行中，如已完成核验请点击「查询认证结果」</p>
@@ -119,15 +119,32 @@
           </div>
         </div>
 
+        <!-- 状态 2'：待人工审核（record_status=4，未配置工商四要素时） -->
+        <div v-if="entManualReview && entRecordStatus === 4" class="processing-section">
+          <el-icon class="processing-icon"><Clock /></el-icon>
+          <h2>企业实名审核中</h2>
+          <p>您的企业实名申请已提交，正在等待平台人工审核，请耐心等待。</p>
+          <p>审核通过后将为您开通企业级 API 权限。</p>
+          <div class="processing-actions">
+            <el-button type="primary" size="large" :loading="entSyncing" @click="refreshEnterprise">刷新状态</el-button>
+          </div>
+        </div>
+
         <!-- 状态 3：无记录 / 未通过（record_status=-1 / 3） -->
         <div v-if="entRecordStatus === -1 || entRecordStatus === 3" class="auth-form-section">
           <div class="form-header">
-            <h2 v-if="entRecordStatus === -1">企业实名认证</h2>
-            <h2 v-else>企业实名认证失败</h2>
-            <p v-if="entRecordStatus === -1">填写企业与法人信息，先进行企业信息核验，核验通过后由法人完成人脸核验；通过后将为您开通企业级 API 权限</p>
-            <p v-else>上次企业认证未通过，请核对信息后重新提交</p>
+            <h2 v-if="entRecordStatus === -1">{{ entManualReview ? '企业实名认证（人工审核）' : '企业实名认证' }}</h2>
+            <h2 v-else>企业实名认证未通过</h2>
+            <p v-if="entRecordStatus === -1">
+              <template v-if="entManualReview">填写企业与法人信息并提交，由平台人工审核，审核通过后为您开通企业级 API 权限</template>
+              <template v-else>填写企业与法人信息，先进行企业信息核验，核验通过后由法人完成人脸核验；通过后将为您开通企业级 API 权限</template>
+            </p>
+            <p v-else>
+              <template v-if="entResultMessage">{{ entResultMessage }}</template>
+              <template v-else>上次企业认证未通过，请核对信息后重新提交</template>
+            </p>
 
-            <div class="free-remaining" :class="{ exhausted: entFreeAuthRemaining <= 0 }">
+            <div v-if="!entManualReview" class="free-remaining" :class="{ exhausted: entFreeAuthRemaining <= 0 }">
               <template v-if="entFreeAuthRemaining > 0">
                 企业实名剩余免费认证次数：<strong>{{ entFreeAuthRemaining }}</strong> 次
               </template>
@@ -151,13 +168,19 @@
               <el-input v-model="entForm.legal_id_card" placeholder="请输入法定代表人身份证号" maxlength="18" />
             </el-form-item>
             <el-button type="primary" size="large" class="submit-btn" :loading="entLoading" @click="handleEnterpriseSubmit">
-              开始认证
+              {{ entManualReview ? '提交人工审核' : '开始认证' }}
             </el-button>
           </el-form>
 
           <div class="tips">
             <h3>认证说明</h3>
-            <ul>
+            <ul v-if="entManualReview">
+              <li>请确保填写的企业名称、统一社会信用代码与法人信息真实有效</li>
+              <li>提交后由平台人工审核，审核结果可在本页查看</li>
+              <li>审核通过即完成企业实名认证，无需人脸核验</li>
+              <li>实名信息一经认证成功即永久绑定，不可修改</li>
+            </ul>
+            <ul v-else>
               <li>企业实名需先通过企业信息（四要素）核验，再由法定代表人本人完成人脸核验，请准备好法人身份证</li>
               <li>认证过程中需要进行人脸识别，请在光线充足的环境下操作</li>
               <li>企业信息核验不通过也会占用免费认证次数</li>
@@ -391,12 +414,16 @@ const loadFreeAuthRemaining = async () => {
 /* ---------------- 企业实名 ---------------- */
 const entLoading = ref(false)
 const entSyncing = ref(false)
-const entRecordStatus = ref(-1) // -1=无记录 0=待四要素 1=待法人扫脸 2=通过 3=未通过
+const entRecordStatus = ref(-1) // -1=无记录 0=待四要素 1=待法人扫脸 2=通过 3=未通过 4=待人工审核
 const entCompany = ref('')
 const entCreditCode = ref('')
 const entPendingUrl = ref('')
 // 企业实名剩余免费认证次数
 const entFreeAuthRemaining = ref(0)
+// 未配置工商四要素核验能力：企业实名改走人工审核
+const entManualReview = ref(false)
+// 企业实名最近一次结果说明（人工审核驳回原因等）
+const entResultMessage = ref('')
 
 const entForm = reactive({
   company_name: '',
@@ -431,6 +458,19 @@ const handleEnterpriseSubmit = async () => {
 
   entLoading.value = true
   try {
+    if (entManualReview.value) {
+      // 人工审核：提交企业与法人信息，等待平台审核
+      await userAPI.submitKybManual({
+        company_name: entForm.company_name,
+        credit_code: entForm.credit_code,
+        legal_name: entForm.legal_name,
+        legal_id_card: entForm.legal_id_card
+      })
+      ElMessage.success('已提交，请等待人工审核')
+      await loadEnterpriseData()
+      return
+    }
+
     const res = await userAPI.startKyb({
       company_name: entForm.company_name,
       credit_code: entForm.credit_code,
@@ -443,7 +483,7 @@ const handleEnterpriseSubmit = async () => {
       handleAuthRedirect(res.auth_url)
     }
   } catch (error: any) {
-    ElMessage.error(error?.message || '企业认证发起失败，请稍后重试')
+    ElMessage.error(error?.message || (entManualReview.value ? '提交失败，请稍后重试' : '企业认证发起失败，请稍后重试'))
   } finally {
     entLoading.value = false
   }
@@ -456,6 +496,8 @@ const loadEnterpriseData = async () => {
     entRecordStatus.value = data.record_status ?? -1
     entPendingUrl.value = data.pending_auth_url || ''
     entFreeAuthRemaining.value = data.free_auth_remaining ?? 0
+    entManualReview.value = data.manual_review ?? false
+    entResultMessage.value = data.result_message || ''
     if (data.company_name) entCompany.value = data.company_name
     if (data.credit_code) entCreditCode.value = data.credit_code
   } catch (error) {

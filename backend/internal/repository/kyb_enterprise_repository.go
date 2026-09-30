@@ -147,6 +147,50 @@ func (r *KybEnterpriseRepository) GetPendingByUserID(userID int64) (*model.KybEn
 	return rec, nil
 }
 
+// GetPendingManualByUserID 获取用户最新待人工审核（status=4）的企业实名记录；无记录返回 (nil, nil)
+func (r *KybEnterpriseRepository) GetPendingManualByUserID(userID int64) (*model.KybEnterprise, error) {
+	query := `SELECT ` + kybEnterpriseColumns + `
+		FROM ` + model.SysDB + `.kyb WHERE user_id = ? AND status = 4 ORDER BY created_at DESC LIMIT 1`
+	rec, err := scanKybEnterprise(r.db.QueryRow(query, userID))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
+// GetByID 按记录 ID 查询企业实名记录
+func (r *KybEnterpriseRepository) GetByID(id int64) (*model.KybEnterprise, error) {
+	query := `SELECT ` + kybEnterpriseColumns + `
+		FROM ` + model.SysDB + `.kyb WHERE id = ?`
+	rec, err := scanKybEnterprise(r.db.QueryRow(query, id))
+	if err == sql.ErrNoRows {
+		return nil, ErrUserNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return rec, nil
+}
+
+// UpdateManualSubmission 覆盖更新待人工审核申请的企业与法人信息（用户重新提交）
+func (r *KybEnterpriseRepository) UpdateManualSubmission(id int64, companyName, creditCode, legalName, legalIDCard string) error {
+	query := `UPDATE ` + model.SysDB + `.kyb 
+		SET company_name = ?, credit_code = ?, legal_name = ?, legal_id_card = ?, updated_at = ? WHERE id = ?`
+	_, err := r.db.Exec(query, companyName, creditCode, legalName, legalIDCard, time.Now(), id)
+	return err
+}
+
+// ReviewManual 写入后台人工审核结果（审核管理员、结果码/说明与通过时间；驳回时 verifiedAt 为 nil）
+func (r *KybEnterpriseRepository) ReviewManual(id int64, status int, resultCode, resultMessage string, verifiedAt *time.Time, adminID int64) error {
+	query := `UPDATE ` + model.SysDB + `.kyb 
+		SET status = ?, result_code = ?, result_message = ?, verified_at = ?, admin_id = ?, updated_at = ? WHERE id = ?`
+	_, err := r.db.Exec(query, status, resultCode, resultMessage, verifiedAt, adminID, time.Now(), id)
+	return err
+}
+
 // UpdateUpstreamInfo 更新法人扫脸上游信息
 func (r *KybEnterpriseRepository) UpdateUpstreamInfo(id int64, token, bizID, requestID string) error {
 	query := `UPDATE ` + model.SysDB + `.kyb 
@@ -184,18 +228,24 @@ func (r *KybEnterpriseRepository) CountUserKybAttempts(userID int64) (int, error
 	return count, nil
 }
 
-// GetKybRecords 分页查询企业实名记录（管理后台）
-func (r *KybEnterpriseRepository) GetKybRecords(page, pageSize int) ([]*model.KybEnterprise, int64, error) {
-	countQuery := `SELECT COUNT(*) FROM ` + model.SysDB + `.kyb`
+// GetKybRecords 分页查询企业实名记录（管理后台）；status<0 表示不限
+func (r *KybEnterpriseRepository) GetKybRecords(status, page, pageSize int) ([]*model.KybEnterprise, int64, error) {
+	where := "1=1"
+	args := make([]interface{}, 0, 1)
+	if status >= 0 {
+		where += " AND status = ?"
+		args = append(args, status)
+	}
+
 	var total int64
-	if err := r.db.QueryRow(countQuery).Scan(&total); err != nil {
+	if err := r.db.QueryRow(`SELECT COUNT(*) FROM `+model.SysDB+`.kyb WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	offset := (page - 1) * pageSize
 	query := `SELECT ` + kybEnterpriseColumns + `
-		FROM ` + model.SysDB + `.kyb ORDER BY created_at DESC LIMIT ? OFFSET ?`
-	rows, err := r.db.Query(query, pageSize, offset)
+		FROM ` + model.SysDB + `.kyb WHERE ` + where + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	rows, err := r.db.Query(query, append(append([]interface{}{}, args...), pageSize, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}

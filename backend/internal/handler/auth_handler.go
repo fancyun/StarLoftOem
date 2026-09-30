@@ -488,6 +488,8 @@ func (h *AuthHandler) GetKybStatus(c *gin.Context) {
 	if remaining, err := h.authService.GetKybFreeAuthRemaining(userID); err == nil {
 		freeRemaining = remaining
 	}
+	// 未配置工商四要素核验能力时走人工审核，前端据此切换表单与文案
+	manualReview := !h.authService.KybSelfServiceAvailable()
 
 	rec, err := h.authService.GetKybRecord(userID)
 	if err != nil {
@@ -496,6 +498,7 @@ func (h *AuthHandler) GetKybStatus(c *gin.Context) {
 			"data": gin.H{
 				"record_status":       -1, // 无企业实名记录
 				"free_auth_remaining": freeRemaining,
+				"manual_review":       manualReview,
 			},
 		})
 		return
@@ -510,8 +513,35 @@ func (h *AuthHandler) GetKybStatus(c *gin.Context) {
 			"record_status":       rec.Status,
 			"pending_auth_url":    h.authService.BuildKybAuthURL(rec),
 			"free_auth_remaining": freeRemaining,
+			"manual_review":       manualReview,
+			"result_message":      rec.ResultMessage,
 		},
 	})
+}
+
+// SubmitKybManual 提交企业实名人工审核申请（未配置工商四要素核验能力时使用）
+func (h *AuthHandler) SubmitKybManual(c *gin.Context) {
+	userID := c.GetInt64("user_id")
+
+	var req struct {
+		CompanyName string `json:"company_name" binding:"required"`
+		CreditCode  string `json:"credit_code" binding:"required"`
+		LegalName   string `json:"legal_name" binding:"required"`
+		LegalIDCard string `json:"legal_id_card" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": "请填写完整的企业与法人信息"})
+		return
+	}
+
+	if err := h.authService.SubmitKybManualReview(
+		userID, req.CompanyName, req.CreditCode, req.LegalName, req.LegalIDCard,
+	); err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "已提交，请等待人工审核"})
 }
 
 // CancelKycRecord 取消当前进行中的认证记录

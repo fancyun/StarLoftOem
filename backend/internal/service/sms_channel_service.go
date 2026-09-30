@@ -1253,10 +1253,16 @@ func (s *SmsChannelService) notifyReplyDownstream(rec *model.SmsSendRecord, r *m
 		return
 	}
 
+	// 通知重试以「业务单号」为键：回复用其序列号（推送场景），拉取场景无序列号时回退回复记录 ID
+	replyBizNo := r.SequenceID
+	if replyBizNo == "" {
+		replyBizNo = strconv.FormatInt(r.ID, 10)
+	}
+
 	resp, err := http.Post(rec.NotifyURL, "application/json", bytes.NewReader(jsonData))
 	if err != nil {
 		log.Printf("通知下游短信回复失败 [record_id=%d, url=%s]: %v", rec.ID, rec.NotifyURL, err)
-		s.notifySvc.Enqueue("sms_reply", rec.ID, rec.UserID, rec.NotifyURL, string(jsonData))
+		s.notifySvc.Enqueue("sms_reply", replyBizNo, rec.ID, rec.UserID, rec.NotifyURL, string(jsonData))
 		return
 	}
 	defer resp.Body.Close()
@@ -1265,7 +1271,7 @@ func (s *SmsChannelService) notifyReplyDownstream(rec *model.SmsSendRecord, r *m
 		log.Printf("通知下游短信回复成功 [record_id=%d, url=%s, status=%d]", rec.ID, rec.NotifyURL, resp.StatusCode)
 	} else {
 		log.Printf("通知下游短信回复返回异常 [record_id=%d, url=%s, status=%d]", rec.ID, rec.NotifyURL, resp.StatusCode)
-		s.notifySvc.Enqueue("sms_reply", rec.ID, rec.UserID, rec.NotifyURL, string(jsonData))
+		s.notifySvc.Enqueue("sms_reply", replyBizNo, rec.ID, rec.UserID, rec.NotifyURL, string(jsonData))
 	}
 }
 
@@ -1443,7 +1449,7 @@ func (s *SmsChannelService) notifySmsReceipt(rec *model.SmsSendRecord, report up
 	resp, err := http.Post(rec.NotifyURL, "application/json", bytes.NewReader(jsonData))
 	if err != nil {
 		log.Printf("通知下游短信回执失败 [record_id=%d, url=%s]: %v", rec.ID, rec.NotifyURL, err)
-		s.notifySvc.Enqueue("sms_receipt", rec.ID, rec.UserID, rec.NotifyURL, string(jsonData))
+		s.notifySvc.Enqueue("sms_receipt", rec.BizNo, rec.ID, rec.UserID, rec.NotifyURL, string(jsonData))
 		return
 	}
 	defer resp.Body.Close()
@@ -1452,7 +1458,7 @@ func (s *SmsChannelService) notifySmsReceipt(rec *model.SmsSendRecord, report up
 		log.Printf("通知下游短信回执成功 [record_id=%d, url=%s, status=%d]", rec.ID, rec.NotifyURL, resp.StatusCode)
 	} else {
 		log.Printf("通知下游短信回执返回异常 [record_id=%d, url=%s, status=%d]", rec.ID, rec.NotifyURL, resp.StatusCode)
-		s.notifySvc.Enqueue("sms_receipt", rec.ID, rec.UserID, rec.NotifyURL, string(jsonData))
+		s.notifySvc.Enqueue("sms_receipt", rec.BizNo, rec.ID, rec.UserID, rec.NotifyURL, string(jsonData))
 	}
 }
 

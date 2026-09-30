@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,6 +38,7 @@ type AdminHandler struct {
 	authSvc             *service.AuthService
 	rt                  *runtime.Runtime
 	jwtSecret           string
+	mediaDir            string // 人脸核验认证媒体目录（容器内 /app/media），供后台查看认证照片/视频
 }
 
 func NewAdminHandler(
@@ -51,6 +54,7 @@ func NewAdminHandler(
 	authSvc *service.AuthService,
 	rt *runtime.Runtime,
 	jwtSecret string,
+	mediaDir string,
 ) *AdminHandler {
 	return &AdminHandler{
 		adminRepo:           adminRepo,
@@ -65,6 +69,7 @@ func NewAdminHandler(
 		authSvc:             authSvc,
 		rt:                  rt,
 		jwtSecret:           jwtSecret,
+		mediaDir:            mediaDir,
 	}
 }
 
@@ -714,34 +719,104 @@ func (h *AdminHandler) GetAuthRecordDetail(c *gin.Context) {
 		return
 	}
 
+	// 归属用户手机号（认证记录未联表，单独取一次）
+	userPhone := ""
+	if u, uerr := h.userRepo.GetUserByID(record.UserID); uerr == nil && u != nil {
+		userPhone = u.Phone
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "success",
 		"data": gin.H{
-			"id":             record.ID,
-			"biz_no":         record.BizNo,
-			"user_id":        record.UserID,
-			"return_url":     record.ReturnURL,
-			"notify_url":     record.NotifyURL,
-			"biz_extra_data": record.BizExtraData,
-			"up_token":       record.UpToken,
-			"up_biz_id":      record.UpBizID,
-			"up_request_id":  record.UpRequestID,
-			"result_code":    record.ResultCode,
-			"result_message": record.ResultMessage,
-			"result_data":    record.ResultData,
-			"status":         record.Status,
-			"cost":           record.Cost,
-			"pay_type":       record.PayType,
-			"pack_count":     record.PackCount,
-			"is_refunded":    record.IsRefunded,
-			"notify_times":   record.NotifyTimes,
-			"notify_status":  record.NotifyStatus,
-			"created_at":     record.CreatedAt,
-			"updated_at":     record.UpdatedAt,
-			"finished_at":    record.FinishedAt,
+			"id":               record.ID,
+			"biz_no":           record.BizNo,
+			"user_id":          record.UserID,
+			"user_phone":       userPhone,
+			"name":             record.Name,
+			"id_card":          maskIDCard(record.IDCard),
+			"product":          record.Product,
+			"api_id":           record.APIID,
+			"return_url":       record.ReturnURL,
+			"notify_url":       record.NotifyURL,
+			"biz_extra_data":   record.BizExtraData,
+			"up_token":         record.UpToken,
+			"up_biz_id":        record.UpBizID,
+			"up_request_id":    record.UpRequestID,
+			"up_query_count":   record.UpQueryCount,
+			"up_query_limit":   model.UpstreamQueryLimit,
+			"result_code":      record.ResultCode,
+			"result_message":   record.ResultMessage,
+			"result_data":      record.ResultData,
+			"status":           record.Status,
+			"cost":             record.Cost,
+			"pay_type":         record.PayType,
+			"pack_count":       record.PackCount,
+			"is_refunded":      record.IsRefunded,
+			"notify_times":     record.NotifyTimes,
+			"notify_status":    record.NotifyStatus,
+			"best_img_fetched": record.BestImgFetched,
+			"media_dir":        record.MediaDir,
+			"media_expire_at":  record.MediaExpireAt,
+			"created_at":       record.CreatedAt,
+			"updated_at":       record.UpdatedAt,
+			"finished_at":      record.FinishedAt,
 		},
 	})
+}
+
+// GetAuthRecordMedia 后台读取认证照片/视频（流式返回，支持视频 Range；文件名白名单，防目录穿越）
+// GET /admin/records/:id/media?kind=image|video
+func (h *AdminHandler) GetAuthRecordMedia(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": "invalid record id"})
+		return
+	}
+	// 文件名白名单：绝不使用客户端提供的文件名
+	var fileName string
+	switch c.Query("kind") {
+	case "image":
+		fileName = "image_best.jpg"
+	case "video":
+		fileName = "video.mp4"
+	default:
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": "invalid media kind"})
+		return
+	}
+
+	record, err := h.authRecordRepo.GetRecordByID(id)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 404, "message": "record not found"})
+		return
+	}
+	if record.MediaDir == "" {
+		c.JSON(http.StatusOK, gin.H{"code": 404, "message": "媒体文件不存在或已清理"})
+		return
+	}
+
+	// 路径校验：相对目录、无 ..、结果仍位于媒体根目录内
+	rel := filepath.Clean(record.MediaDir)
+	if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		c.JSON(http.StatusOK, gin.H{"code": 404, "message": "媒体文件不存在或已清理"})
+		return
+	}
+	root := filepath.Clean(h.mediaDir)
+	full := filepath.Join(root, rel, fileName)
+	if !strings.HasPrefix(full, root+string(os.PathSeparator)) {
+		c.JSON(http.StatusOK, gin.H{"code": 404, "message": "媒体文件不存在或已清理"})
+		return
+	}
+	if st, serr := os.Stat(full); serr != nil || st.IsDir() {
+		c.JSON(http.StatusOK, gin.H{"code": 404, "message": "媒体文件不存在或已清理"})
+		return
+	}
+
+	h.logAdminOperation(c, "view_media", "auth_record", id, "kind="+c.Query("kind"))
+	// 生物特征属高敏数据：禁止缓存；c.File 流式返回并按扩展名推断 Content-Type（视频自动支持 Range）
+	c.Header("Cache-Control", "no-store, private")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.File(full)
 }
 
 // QueryAuthRecordResult 手动查询认证记录的上游结果（调上游核对并回写本地）

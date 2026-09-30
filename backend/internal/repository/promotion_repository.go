@@ -159,6 +159,91 @@ func (r *PromotionRepository) listSettlementsByRange(table string, referrerType 
 	return items, total, rows.Err()
 }
 
+// PromoterRow 推广商行（用户型推广 referrer_type=user / 员工销售 staff），含下级数与累计提成净额
+type PromoterRow struct {
+	ReferrerType    string    `json:"referrer_type"`
+	ReferrerID      int64     `json:"referrer_id"`
+	AffCode         string    `json:"aff_code"`
+	Name            string    `json:"name"`
+	Phone           string    `json:"phone"` // 员工无手机号（admin_user 无该列）
+	Status          int       `json:"status"`
+	SubCount        int64     `json:"sub_count"`         // 直接下级用户数
+	CommissionTotal float64   `json:"commission_total"`  // 累计提成净额（含退款冲回负数）
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// promoterSource 推广商来源：持有推广码的用户与后台员工合并；下级数与累计提成用标量子查询聚合（避免 N+1）
+func promoterSource() string {
+	return `SELECT 'user' AS referrer_type, u.id AS referrer_id, COALESCE(u.aff_code,'') AS aff_code,
+			u.username AS name, u.phone, u.status, u.created_at,
+			(SELECT COUNT(*) FROM ` + model.SysDB + `.user s WHERE s.referrer_type = 'user' AND s.referrer_id = u.id) AS sub_count,
+			COALESCE((SELECT SUM(c.amount) FROM ` + model.TableUserCommission + ` c WHERE c.referrer_type = 'user' AND c.referrer_id = u.id), 0) AS commission_total
+		FROM ` + model.SysDB + `.user u WHERE u.aff_code IS NOT NULL
+		UNION ALL
+		SELECT 'staff', a.id, COALESCE(a.aff_code,''), a.username, '', a.status, a.created_at,
+			(SELECT COUNT(*) FROM ` + model.SysDB + `.user s WHERE s.referrer_type = 'staff' AND s.referrer_id = a.id),
+			COALESCE((SELECT SUM(c.amount) FROM ` + model.TableStaffCommission + ` c WHERE c.referrer_type = 'staff' AND c.referrer_id = a.id), 0)
+		FROM ` + model.SysDB + `.admin_user a WHERE a.aff_code IS NOT NULL`
+}
+
+// ListPromoters 后台分页查询推广商（referrerType 为空表示用户型与员工合并；keyword 匹配推广码/手机号/名称）
+func (r *PromotionRepository) ListPromoters(referrerType, keyword string, page, pageSize int) ([]*PromoterRow, int64, error) {
+	where := "1=1"
+	args := []interface{}{}
+	if referrerType != "" {
+		where += " AND t.referrer_type = ?"
+		args = append(args, referrerType)
+	}
+	if keyword != "" {
+		like := "%" + keyword + "%"
+		where += " AND (t.aff_code LIKE ? OR t.phone LIKE ? OR t.name LIKE ?)"
+		args = append(args, like, like, like)
+	}
+
+	src := promoterSource()
+	var total int64
+	if err := r.db.QueryRow("SELECT COUNT(*) FROM ("+src+") t WHERE "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	query := `SELECT t.referrer_type, t.referrer_id, t.aff_code, t.name, t.phone, t.status, t.sub_count, t.commission_total, t.created_at
+		FROM (` + src + `) t WHERE ` + where + ` ORDER BY t.commission_total DESC, t.referrer_id DESC LIMIT ? OFFSET ?`
+	rows, err := r.db.Query(query, append(append([]interface{}{}, args...), pageSize, (page-1)*pageSize)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	list := make([]*PromoterRow, 0, pageSize)
+	for rows.Next() {
+		row := &PromoterRow{}
+		if err := rows.Scan(&row.ReferrerType, &row.ReferrerID, &row.AffCode, &row.Name, &row.Phone,
+			&row.Status, &row.SubCount, &row.CommissionTotal, &row.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		list = append(list, row)
+	}
+	return list, total, rows.Err()
+}
+
+// GetPromoter 查询单个推广商（未命中返回 (nil, nil)）
+func (r *PromotionRepository) GetPromoter(referrerType string, referrerID int64) (*PromoterRow, error) {
+	row := &PromoterRow{}
+	err := r.db.QueryRow(
+		`SELECT t.referrer_type, t.referrer_id, t.aff_code, t.name, t.phone, t.status, t.sub_count, t.commission_total, t.created_at
+			FROM (`+promoterSource()+`) t WHERE t.referrer_type = ? AND t.referrer_id = ?`,
+		referrerType, referrerID,
+	).Scan(&row.ReferrerType, &row.ReferrerID, &row.AffCode, &row.Name, &row.Phone,
+		&row.Status, &row.SubCount, &row.CommissionTotal, &row.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
 // SumCommissionByRef 汇总某业务单据在指定提成表中的提成净额（已计提 − 已冲回）。
 // 供退款按原计提额冲回，避免两个问题：
 //  1. 提成比例被后台事后调整时，按新比例重算会与实际计提不符（少冲=推广方白拿，多冲=推广方倒亏）；
