@@ -33,8 +33,9 @@ func NewCronManager(authService *service.AuthService, balanceService *service.Ba
 
 // Start 启动定时任务
 func (m *CronManager) Start() error {
-	// 每5分钟同步一次处理中记录，根据上游返回结果处理退款
-	_, err := m.cron.AddFunc("0 */5 * * * *", m.syncPendingRecords)
+	// 每20分钟同步一次处理中记录，根据上游返回结果处理退款
+	// （上游核身有效期为 60 分钟，20 分钟一次的补查频率足够且更省上游 get_result 配额）
+	_, err := m.cron.AddFunc("0 */20 * * * *", m.syncPendingRecords)
 	if err != nil {
 		return err
 	}
