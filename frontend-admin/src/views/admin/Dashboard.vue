@@ -301,7 +301,7 @@ const getStatusText = (status: number) => {
 
 .stats-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  grid-template-columns: repeat(4, 1fr);
   gap: var(--gap-lg);
   margin-bottom: var(--gap-lg);
 }
