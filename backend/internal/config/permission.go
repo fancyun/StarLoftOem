@@ -134,7 +134,7 @@ func HasPermission(perms, code string) bool {
 
 // NormalizePermissions 归一化权限码列表：过滤未知码、去重、排序，并做两级收敛：
 //   - 持有分组通配码时，该分组下的具体权限码不再重复存储（通配已覆盖，含后续新增页面）；
-//   - 三个分组通配码齐备等价于 all，直接收敛为 all。
+//   - 四个分组通配码齐备等价于 all，直接收敛为 all。
 func NormalizePermissions(list []string) string {
 	valid := PermissionCodes()
 	set := make(map[string]bool)
@@ -166,7 +166,7 @@ func NormalizePermissions(list []string) string {
 			}
 		}
 	}
-	// 三个分组全通配 == 全部权限
+	// 四个分组全通配 == 全部权限
 	allGroups := true
 	for _, w := range wildcards {
 		if !set[w] {
