@@ -782,7 +782,16 @@ func (s *BalanceService) SettleResourcePackPaid(orderID int64, channelTradeNo st
 	}
 	product, packID, err := parsePackBizNo(order.BizNo)
 	if err != nil {
-		return err
+		// 兼容两阶段改造前建单的历史资源包订单：biz_no 为纯 packID（当时仅人脸核验包可在线支付）
+		legacyID, perr := strconv.ParseInt(order.BizNo, 10, 64)
+		if perr != nil {
+			return fmt.Errorf("资源包支付单关联单号非法: %w", err)
+		}
+		pack, gerr := s.resourcePackRepo.GetPackByID(legacyID)
+		if gerr != nil {
+			return gerr
+		}
+		product, packID = pack.Product, pack.ID
 	}
 	target, err := s.packTargetForSettle(product, packID)
 	if err != nil {
