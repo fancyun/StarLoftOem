@@ -103,6 +103,11 @@ const routes: Array<RouteRecordRaw> = [
         component: () => import('@/views/user/Balance.vue')
       },
       {
+        path: 'orders',
+        name: 'UserOrders',
+        component: () => import('@/views/user/Orders.vue')
+      },
+      {
         path: 'payment/:pay_order_no',
         name: 'PayDetail',
         component: () => import('@/views/user/PayDetail.vue')

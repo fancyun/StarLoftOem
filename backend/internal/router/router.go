@@ -285,8 +285,12 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 			auth.POST("/kyb/manual", authHandler.SubmitKybManual)
 			auth.GET("/records", authHandler.GetUserAuthRecords)
 			auth.GET("/stats/calls", authHandler.GetUserAuthCallStats)
-			auth.POST("/recharge", authHandler.CreateRecharge)
-			auth.GET("/recharge/result", authHandler.GetRechargeResult)
+			// 两阶段下单：先建未支付订单 → 再选支付方式支付（充值 / 购买资源包统一走此链路）
+			auth.POST("/orders", authHandler.CreateOrder)                      // 建未支付订单（不扣余额、不选渠道）
+			auth.GET("/orders", authHandler.ListOrders)                        // 我的待支付订单（继续支付入口）
+			auth.GET("/orders/:pay_order_no", authHandler.GetOrder)            // 订单详情（支付页与轮询共用）
+			auth.POST("/orders/:pay_order_no/pay", authHandler.PayOrder)       // 选定支付方式并支付
+			auth.POST("/orders/:pay_order_no/cancel", authHandler.CancelOrder) // 取消待支付订单（退还抵扣余额）
 			// 提现（按充值支付订单原路退款）
 			auth.GET("/withdraw/refundable", authHandler.GetRefundableOrders) // 可提现（可退款）订单与总额
 			auth.POST("/withdraw", authHandler.Withdraw)                      // 发起提现
@@ -319,17 +323,14 @@ func Setup(cfg *config.Config) (*gin.Engine, *service.AuthService, *service.Bala
 			auth.GET("/sms/stats", smsHandler.SMSStats)
 			// 在线发送短信（登录用户直接发送，按自己账号的资源包/余额计费）
 			auth.POST("/sms/send", smsHandler.SendSMSForWeb)
-			// 短信资源包（短信库独立表；短信单一产品，无 product 类型）
-			auth.GET("/sms/packs", authHandler.ListSmsResourcePacks)                  // 在售短信资源包列表
-			auth.POST("/sms/packs/:id/purchase", authHandler.PurchaseSmsResourcePack) // 使用余额购买短信资源包
-			auth.GET("/sms/packs/mine", authHandler.MySmsResourcePacks)               // 我的短信资源包
+			// 短信资源包（短信库独立表；购买统一走 /orders 两阶段下单）
+			auth.GET("/sms/packs", authHandler.ListSmsResourcePacks) // 在售短信资源包列表
+			auth.GET("/sms/packs/mine", authHandler.MySmsResourcePacks) // 我的短信资源包
 			// 用户文件上传（营业执照/身份证等图片）
 			auth.POST("/upload", uploadHandler.UploadFile)
-			// 资源包（余额购买 / 在线组合支付）
-			auth.GET("/packs", authHandler.ListResourcePacks)                   // 在售资源包列表
-			auth.POST("/packs/:id/purchase", authHandler.PurchaseResourcePack)  // 使用余额购买资源包
-			auth.POST("/packs/:id/pay", authHandler.PurchaseResourcePackOnline) // 在线购买（余额+支付宝组合支付）
-			auth.GET("/packs/mine", authHandler.MyResourcePacks)                // 我的资源包
+			// 资源包（购买统一走 /orders 两阶段下单）
+			auth.GET("/packs", authHandler.ListResourcePacks)    // 在售资源包列表
+			auth.GET("/packs/mine", authHandler.MyResourcePacks) // 我的资源包
 
 			// 推广（控制台 /promotions）：打开推广页即自动开通推广码，按下级成交额获取提成收益
 			auth.GET("/promotions/me", promotionHandler.Me)                    // 我的推广概览（含推广码/推广链接，无码则自动生成）

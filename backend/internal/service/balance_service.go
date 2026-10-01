@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -231,40 +232,220 @@ func (s *BalanceService) DeductBalance(userID int64, amount float64, orderID int
 	return tx.Commit()
 }
 
-// PrepareRecharge 构造充值待支付单（不落库）：先调用上游生成支付信息，成功后再落库，
-// 上游失败不会产生任何支付记录。若该用户已存在同渠道同金额的未过期待支付单，直接复用返回（支付查重）。
-func (s *BalanceService) PrepareRecharge(userID int64, amount float64, channel string) (*model.PaymentOrder, error) {
-	if !onlineChannelSupported(channel) {
-		return nil, fmt.Errorf("不支持的支付渠道: %s", channel)
+// ---------- 两阶段下单：第一阶段「建未支付订单」 ----------
+
+// PackOrderTarget 资源包下单目标。人脸核验包与短信包分属两库、主键会重复，故必须带产品标识区分。
+type PackOrderTarget struct {
+	Product    string // fv_auth / fv_self / sms / sms_marketing
+	PackID     int64
+	Name       string
+	TotalCount int
+	Price      float64
+	IsSms      bool
+}
+
+// packBizNo 资源包订单的业务单号：`产品标识:资源包ID`（沿用 price_override.target 的既有约定）
+func packBizNo(product string, packID int64) string {
+	return fmt.Sprintf("%s:%d", product, packID)
+}
+
+// parsePackBizNo 解析资源包订单业务单号，返回产品标识与资源包 ID
+func parsePackBizNo(bizNo string) (string, int64, error) {
+	product, idStr, ok := strings.Cut(bizNo, ":")
+	if !ok {
+		return "", 0, fmt.Errorf("资源包订单业务单号非法: %s", bizNo)
 	}
-	// 支付查重：同一用户同一渠道同一金额的未过期待支付单直接复用，避免重复建单。
-	// 存量待支付单无渠道支付信息（升级前创建）时无法复用，直接新建（充值单不占余额，旧单 30 分钟内过期）。
-	if existing, err := s.paymentRepo.GetPendingOrder(userID, paymentIntentRecharge, "", channel, amount); err != nil {
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		return "", 0, fmt.Errorf("资源包订单业务单号非法: %s", bizNo)
+	}
+	return product, id, nil
+}
+
+// resolvePackTarget 按产品定位资源包定义（人脸核验走 fv 库、短信走短信库），并解析用户适用的覆盖价
+func (s *BalanceService) resolvePackTarget(userID int64, product string, packID int64) (*PackOrderTarget, error) {
+	switch product {
+	case model.ServiceFVAuth, model.ServiceFVSelf:
+		pack, err := s.resourcePackRepo.GetPackByID(packID)
+		if err != nil {
+			return nil, err
+		}
+		if pack.Status != 1 {
+			return nil, repository.ErrPackOffSale
+		}
+		return &PackOrderTarget{
+			Product: pack.Product, PackID: pack.ID, Name: pack.Name, TotalCount: pack.TotalCount,
+			Price: s.packPrice(userID, pack.Product, pack.ID, pack.Price),
+		}, nil
+	case model.ServiceSMS, model.ProductSMSMarketing:
+		pack, err := s.smsResourcePackRepo.GetPackByID(packID)
+		if err != nil {
+			return nil, err
+		}
+		if pack.Status != 1 {
+			return nil, repository.ErrPackOffSale
+		}
+		return &PackOrderTarget{
+			Product: pack.Product, PackID: pack.ID, Name: pack.Name, TotalCount: pack.TotalCount,
+			Price: s.packPrice(userID, pack.Product, pack.ID, pack.Price), IsSms: true,
+		}, nil
+	}
+	return nil, fmt.Errorf("不支持的资源包类型: %s", product)
+}
+
+// packTargetForSettle 读取资源包定义用于订单落地：不校验上架状态、不解析覆盖价，
+// 已支付订单须按购买时的包定义发放（包下架不影响已成交订单）。
+func (s *BalanceService) packTargetForSettle(product string, packID int64) (*PackOrderTarget, error) {
+	switch product {
+	case model.ServiceFVAuth, model.ServiceFVSelf:
+		pack, err := s.resourcePackRepo.GetPackByID(packID)
+		if err != nil {
+			return nil, err
+		}
+		return &PackOrderTarget{Product: pack.Product, PackID: pack.ID, Name: pack.Name, TotalCount: pack.TotalCount, Price: pack.Price}, nil
+	case model.ServiceSMS, model.ProductSMSMarketing:
+		pack, err := s.smsResourcePackRepo.GetPackByID(packID)
+		if err != nil {
+			return nil, err
+		}
+		return &PackOrderTarget{Product: pack.Product, PackID: pack.ID, Name: pack.Name, TotalCount: pack.TotalCount, Price: pack.Price, IsSms: true}, nil
+	}
+	return nil, fmt.Errorf("不支持的资源包类型: %s", product)
+}
+
+// CreateOrder 建未支付订单（第一阶段）：不扣余额、不选渠道、不调上游。
+//   - intent=recharge：amount 为充值金额（须 > 0），biz_no 为空；
+//   - intent=resource_pack：按 product + packID 定位资源包并解析用户适用覆盖价作为应付总额，
+//     biz_no 为 `产品标识:资源包ID`。
+//
+// 同一用户同用途同业务单号同金额的未过期待支付单直接复用，避免重复建单。
+func (s *BalanceService) CreateOrder(userID int64, intent, product string, packID int64, amount float64) (*model.PaymentOrder, error) {
+	var bizNo string
+	total := amount
+	switch intent {
+	case paymentIntentRecharge:
+		if amount <= 0 {
+			return nil, fmt.Errorf("充值金额须大于 0")
+		}
+	case paymentIntentResourcePack:
+		target, err := s.resolvePackTarget(userID, product, packID)
+		if err != nil {
+			return nil, err
+		}
+		bizNo = packBizNo(target.Product, target.PackID)
+		total = target.Price
+	default:
+		return nil, fmt.Errorf("不支持的订单用途: %s", intent)
+	}
+
+	if existing, err := s.paymentRepo.GetPendingOrder(userID, intent, bizNo, total); err != nil {
 		return nil, err
-	} else if existing != nil && existing.PayInfo != "" {
+	} else if existing != nil {
 		return existing, nil
 	}
-	// 单日在线支付限额：新建待支付单前校验当日在线支付额度
-	if err := s.CheckDailyOnlineLimit(userID, amount); err != nil {
+
+	order := s.newPaymentOrder(userID, total, "", intent, bizNo, 0)
+	if err := s.paymentRepo.CreateOrder(order); err != nil {
 		return nil, err
 	}
-	return s.newPaymentOrder(userID, amount, channel, paymentIntentRecharge, "", 0), nil
+	return order, nil
 }
 
-// CreateRechargeOrder 上游支付信息生成成功后落库充值待支付单
-func (s *BalanceService) CreateRechargeOrder(order *model.PaymentOrder) error {
-	if order.ID > 0 {
-		// 复用已有待支付单，不重复落库
+// GetOrderForUser 查询属于指定用户的订单（支付页/轮询用），非本人订单一律视为不存在
+func (s *BalanceService) GetOrderForUser(userID int64, payOrderNo string) (*model.PaymentOrder, error) {
+	order, err := s.paymentRepo.GetOrderByPayOrderNo(payOrderNo)
+	if err != nil {
+		return nil, err
+	}
+	if order.UserID != userID {
+		return nil, repository.ErrPaymentOrderNotFound
+	}
+	return order, nil
+}
+
+// ListUnpaidOrders 查询用户仍未过期的待支付订单（供「我的订单」页继续支付）
+func (s *BalanceService) ListUnpaidOrders(userID int64) ([]*model.PaymentOrder, error) {
+	return s.paymentRepo.ListUnpaidByUser(userID)
+}
+
+// refundBalanceTx 事务内退还余额并写退款账单（refType=payment_order）
+func (s *BalanceService) refundBalanceTx(tx *sql.Tx, userID int64, amount float64, orderID int64, remark string) error {
+	if amount <= 0 {
 		return nil
 	}
-	return s.paymentRepo.CreateOrder(order)
+	balance, err := s.userRepo.GetBalanceForUpdateTx(tx, userID)
+	if err != nil {
+		return err
+	}
+	newBalance := balance + amount
+	if err := s.userRepo.UpdateUserBalanceTx(tx, userID, newBalance); err != nil {
+		return err
+	}
+	bill := &model.Bill{
+		UserID:        userID,
+		Service:       "refund",
+		BillType:      model.BillTypeRefund,
+		SpendType:     model.SpendTypeRefund,
+		PayType:       model.PayTypeBalance,
+		Amount:        amount,
+		BalanceBefore: balance,
+		BalanceAfter:  newBalance,
+		RefType:       "payment_order",
+		RefID:         orderID,
+		PayOrderID:    orderID,
+		Remark:        remark,
+	}
+	return s.writeBillTx(tx, bill)
 }
 
-// 支付用途：充值 / 购买资源包
+// resetOrderBindingTx 事务内复位订单的渠道绑定与余额抵扣（重新选择支付方式/上游取链接失败时使用），
+// 并退还上次已抵扣的余额。复位后订单回到「未选渠道的待支付单」形态。
+func (s *BalanceService) resetOrderBindingTx(tx *sql.Tx, order *model.PaymentOrder, total float64) error {
+	if order.BalanceAmount > 0 {
+		if err := s.refundBalanceTx(tx, order.UserID, order.BalanceAmount, order.ID, "重新选择支付方式，退还上次抵扣余额"); err != nil {
+			return err
+		}
+	}
+	if err := s.paymentRepo.RevertOnlinePaymentTx(tx, order.ID, total); err != nil {
+		return err
+	}
+	order.Amount, order.BalanceAmount, order.Channel, order.PayInfo = total, 0, "", ""
+	return nil
+}
+
+// validatePayableOrder 校验订单可支付：属于本人、待支付、未过期
+func validatePayableOrder(order *model.PaymentOrder, userID int64) error {
+	if order.UserID != userID {
+		return repository.ErrPaymentOrderNotFound
+	}
+	if order.Status != 0 {
+		return fmt.Errorf("订单状态已变更，无法支付")
+	}
+	if order.ExpireTime != nil && order.ExpireTime.Before(time.Now()) {
+		return fmt.Errorf("订单已过期，请重新下单")
+	}
+	return nil
+}
+
+// 支付用途：充值 / 购买资源包（对外可见，handler 与前端按此区分订单去向）
 const (
-	paymentIntentRecharge     = "recharge"
-	paymentIntentResourcePack = "resource_pack"
+	PaymentIntentRecharge     = "recharge"
+	PaymentIntentResourcePack = "resource_pack"
 )
+
+const (
+	paymentIntentRecharge     = PaymentIntentRecharge
+	paymentIntentResourcePack = PaymentIntentResourcePack
+)
+
+// GetUserBalance 查询用户当前余额（订单页展示可用余额）
+func (s *BalanceService) GetUserBalance(userID int64) (float64, error) {
+	user, err := s.userRepo.GetUserByID(userID)
+	if err != nil {
+		return 0, err
+	}
+	return user.Balance, nil
+}
 
 // SetDailyOnlineLimitFn 注入单日在线支付限额取数函数（后台系统设置可改，0 表示不限）
 func (s *BalanceService) SetDailyOnlineLimitFn(fn func() float64) {
@@ -315,219 +496,273 @@ func (s *BalanceService) newPaymentOrder(userID int64, amount float64, channel, 
 	}
 }
 
-// PurchaseResourcePackResult 购买资源包结果
-type PurchaseResourcePackResult struct {
-	UserPack           *model.UserResourcePack // 全部由余额支付时直接发放的资源包
-	PaymentOrder       *model.PaymentOrder     // 需要外部支付时的待支付单（上游成功后落库）
-	Pack               *model.ResourcePack     // 关联资源包（确认落库账单用）
-	FullyPaidByBalance bool                    // 是否已由余额全额支付
-	BalanceAmount      float64                 // 本次支付的余额部分
-	ExternalAmount     float64                 // 本次支付的外部支付部分（支付宝/微信）
-	BalanceBefore      float64                 // 扣除余额部分前的余额（确认落库/回滚流水用）
+// ---------- 两阶段下单：第二阶段「选定支付方式并支付」 ----------
+
+// OnlinePaymentPrep 在线支付准备结果（余额抵扣已完成，等待调用方取上游支付链接）。
+// ExternalPart == 0 表示余额已覆盖全款，调用方应改走 PayOrderWithBalance（余额支付）。
+type OnlinePaymentPrep struct {
+	Order         *model.PaymentOrder
+	BalancePart   float64 // 本次余额抵扣部分
+	ExternalPart  float64 // 需在线支付的差额
+	BalanceBefore float64 // 扣减前的余额
 }
 
-// PrepareResourcePackOnline 资源包在线购买准备（事务，原子）：扣余额部分 + 写消费流水。
-// 余额全额覆盖时直接发放资源包；否则构造待支付单（不落库），由调用方先调上游生成支付信息，
-// 成功后再 ConfirmResourcePackOrder 落库，失败调用 RollbackResourcePackReservation 回滚。
-// 待支付单 30 分钟未支付由定时任务关闭并退还余额支付部分。
-func (s *BalanceService) PrepareResourcePackOnline(userID, packID int64, channel string) (*PurchaseResourcePackResult, error) {
+// settleOrderByBalanceTx 事务内以余额全额结算资源包订单：扣余额 + 标记已支付 + 发放资源包 + 记账单。
+// 提成与审计由调用方在事务提交后处理。
+func (s *BalanceService) settleOrderByBalanceTx(
+	tx *sql.Tx, order *model.PaymentOrder, target *PackOrderTarget, total float64,
+) (refType string, refID int64, userPack *model.UserResourcePack, smsPack *model.SmsUserResourcePack, balanceBefore float64, err error) {
+	balance, err := s.userRepo.GetBalanceForUpdateTx(tx, order.UserID)
+	if err != nil {
+		return "", 0, nil, nil, 0, err
+	}
+	if balance < total {
+		return "", 0, nil, nil, 0, ErrInsufficientBalance
+	}
+	newBalance := balance - total
+	if err := s.userRepo.UpdateUserBalanceTx(tx, order.UserID, newBalance); err != nil {
+		return "", 0, nil, nil, 0, err
+	}
+	if _, err := s.paymentRepo.MarkOrderPaidWithChannelTx(tx, order.ID, model.ChannelBalance, 0, total); err != nil {
+		return "", 0, nil, nil, 0, err
+	}
+
+	if target.IsSms {
+		smsPack = &model.SmsUserResourcePack{
+			UserID:         order.UserID,
+			TotalCount:     target.TotalCount,
+			RemainingCount: target.TotalCount,
+			Product:        target.Product, // 类型快照：消费端按此与模板类型匹配
+			Price:          total,          // 价格快照：实付金额
+			Status:         1,
+		}
+		if err := s.smsResourcePackRepo.CreateUserPackTx(tx, smsPack); err != nil {
+			return "", 0, nil, nil, 0, err
+		}
+		refType, refID = "sms_user_resource_pack", smsPack.ID
+	} else {
+		userPack = &model.UserResourcePack{
+			UserID:         order.UserID,
+			TotalCount:     target.TotalCount,
+			RemainingCount: target.TotalCount,
+			Product:        target.Product, // 产品快照：消费端按此匹配资源包，缺省会导致已购包无法抵扣
+			Price:          total,          // 价格快照：实付金额
+			Status:         1,
+		}
+		if err := s.resourcePackRepo.CreateUserPackTx(tx, userPack); err != nil {
+			return "", 0, nil, nil, 0, err
+		}
+		refType, refID = "user_resource_pack", userPack.ID
+	}
+
+	bill := &model.Bill{
+		UserID:        order.UserID,
+		Product:       target.Product,
+		Service:       target.Product,
+		BillType:      model.BillTypeConsume,
+		SpendType:     model.SpendTypePackPurchase,
+		PayType:       model.PayTypeBalance,
+		Amount:        total,
+		BalanceBefore: balance,
+		BalanceAfter:  newBalance,
+		RefType:       refType,
+		RefID:         refID,
+		PayOrderID:    order.ID,
+		Remark:        fmt.Sprintf("购买资源包：%s（余额支付）", target.Name),
+	}
+	if err := s.writeBillTx(tx, bill); err != nil {
+		return "", 0, nil, nil, 0, err
+	}
+	return refType, refID, userPack, smsPack, balance, nil
+}
+
+// PayOrderWithBalance 以余额全额支付资源包订单：原子完成「扣余额 + 标记已支付 + 发放资源包 + 记账单」。
+// 充值订单不支持余额支付；订单此前若已绑定在线渠道，先退还已抵扣余额再按全额扣减。
+func (s *BalanceService) PayOrderWithBalance(userID int64, payOrderNo string) (*model.UserResourcePack, *model.SmsUserResourcePack, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Rollback()
+
+	order, err := s.paymentRepo.GetOrderByPayOrderNoForUpdateTx(tx, payOrderNo)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validatePayableOrder(order, userID); err != nil {
+		return nil, nil, err
+	}
+	if order.Intent != paymentIntentResourcePack {
+		return nil, nil, fmt.Errorf("充值订单不支持余额支付")
+	}
+	product, packID, err := parsePackBizNo(order.BizNo)
+	if err != nil {
+		return nil, nil, err
+	}
+	target, err := s.resolvePackTarget(userID, product, packID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	total := order.Amount + order.BalanceAmount
+	if order.Channel != "" || order.BalanceAmount > 0 {
+		// 重新选择支付方式：先退还上次抵扣的余额并复位订单
+		if err := s.resetOrderBindingTx(tx, order, total); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	refType, refID, userPack, smsPack, _, err := s.settleOrderByBalanceTx(tx, order, target, total)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+
+	s.accrueCommission(userID, target.Product, total, int64(target.TotalCount), refType, refID, fmt.Sprintf("购买资源包：%s", target.Name))
+	audit.Log("pack_issue",
+		audit.KV("user_pack_id", refID),
+		audit.KV("user_id", userID),
+		audit.KV("pack_id", target.PackID),
+		audit.KV("product", target.Product),
+		audit.KV("total_count", target.TotalCount),
+		audit.KV("pay_order_no", order.PayOrderNo),
+		audit.KV("channel", model.ChannelBalance))
+	return userPack, smsPack, nil
+}
+
+// PrepareOrderOnlinePayment 在线支付准备（第二阶段）：事务内完成余额抵扣与渠道绑定，返回在线支付差额。
+// useBalance 为 true 时自动优先抵扣余额（抵扣额与差额随订单一并落库）。
+// ExternalPart == 0 表示余额已覆盖全款，调用方应改走 PayOrderWithBalance。
+// 调用方取得上游支付链接后调 BindOrderPayInfo 回填；上游失败调 RevertOrderOnlinePayment 回滚。
+func (s *BalanceService) PrepareOrderOnlinePayment(userID int64, payOrderNo, channel string, useBalance bool) (*OnlinePaymentPrep, error) {
 	if !onlineChannelSupported(channel) {
 		return nil, fmt.Errorf("不支持的支付渠道: %s", channel)
 	}
 
-	pack, err := s.resourcePackRepo.GetPackByID(packID)
-	if err != nil {
-		return nil, err
-	}
-	if pack.Status != 1 {
-		return nil, repository.ErrPackOffSale
-	}
-
-	// 支付查重：同一用户同一资源包同一渠道的未过期待支付单直接复用，避免重复扣余额/建单
-	if existing, err := s.paymentRepo.GetPendingOrder(userID, paymentIntentResourcePack, fmt.Sprintf("%d", packID), channel, 0); err != nil {
-		return nil, err
-	} else if existing != nil {
-		if existing.PayInfo != "" {
-			return &PurchaseResourcePackResult{
-				PaymentOrder:   existing,
-				Pack:           pack,
-				ExternalAmount: existing.Amount,
-				BalanceAmount:  existing.BalanceAmount,
-			}, nil
-		}
-		// 存量待支付单无渠道支付信息（升级前创建）：无法复用，先关闭旧单并退还余额部分，
-		// 再重新下单，避免余额重复扣减；旧单若已被用户支付将由回调/对账转充值入账兜底
-		if err := s.closeResourcePackOrder(existing); err != nil {
-			return nil, fmt.Errorf("关闭旧资源包支付单失败: %w", err)
-		}
-	}
-
-	// 开启事务：扣余额 + 发放/下单，原子完成
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
-	// 锁定余额，计算组合支付各部分（售价按用户适用的 推广/单用户定价解析）
-	price := s.packPrice(userID, pack.Product, packID, pack.Price)
+	order, err := s.paymentRepo.GetOrderByPayOrderNoForUpdateTx(tx, payOrderNo)
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePayableOrder(order, userID); err != nil {
+		return nil, err
+	}
+
+	total := order.Amount + order.BalanceAmount
+	if order.Channel != "" || order.BalanceAmount > 0 {
+		// 重新选择支付方式：先退还上次抵扣的余额并复位订单
+		if err := s.resetOrderBindingTx(tx, order, total); err != nil {
+			return nil, err
+		}
+	}
+
 	balance, err := s.userRepo.GetBalanceForUpdateTx(tx, userID)
 	if err != nil {
 		return nil, err
 	}
-	balancePart := price
-	if balance < balancePart {
-		balancePart = balance
+	// 充值订单不允许用余额抵扣（用余额给自己充值无意义），仅购买资源包可抵扣
+	balancePart := 0.0
+	if useBalance && order.Intent == paymentIntentResourcePack && balance > 0 {
+		balancePart = math.Min(balance, total)
 	}
-	externalPart := price - balancePart
+	externalPart := total - balancePart
 
-	// 单日在线支付限额：本次外部（支付宝/微信）支付金额计入当日额度，超限直接拒绝（尚未扣余额）
-	if externalPart > 0 {
-		if err := s.CheckDailyOnlineLimit(userID, externalPart); err != nil {
-			return nil, err
-		}
-	}
-
-	// 扣除余额部分
-	if balancePart > 0 {
-		newBalance := balance - balancePart
-		if err := s.userRepo.UpdateUserBalanceTx(tx, userID, newBalance); err != nil {
-			return nil, err
-		}
-	}
-
-	// 余额已全额覆盖：直接发放资源包
+	// 余额已覆盖全款：不改动任何状态，交由调用方改走余额支付
 	if externalPart <= 0 {
-		up := &model.UserResourcePack{
-			UserID:         userID,
-			TotalCount:     pack.TotalCount,
-			RemainingCount: pack.TotalCount,
-			Product:        pack.Product, // 产品快照：消费端按此匹配资源包，缺省会导致已购包无法抵扣
-			Price:          balancePart,  // 价格快照：余额全额购买时即实付金额
-			Status:         1,
-		}
-		if err := s.resourcePackRepo.CreateUserPackTx(tx, up); err != nil {
-			return nil, err
-		}
-		// 记录统一账单（余额全额购买资源包）
-		if balancePart > 0 {
-			bill := &model.Bill{
-				UserID:        userID,
-				Product:       pack.Product,
-				Service:       pack.Product,
-				BillType:      model.BillTypeConsume,
-				SpendType:     model.SpendTypePackPurchase,
-				PayType:       model.PayTypeBalance,
-				Amount:        balancePart,
-				BalanceBefore: balance,
-				BalanceAfter:  balance - balancePart,
-				RefType:       "user_resource_pack",
-				RefID:         up.ID,
-				Remark:        fmt.Sprintf("购买资源包：%s（余额支付）", pack.Name),
-			}
-			if err := s.writeBillTx(tx, bill); err != nil {
-				return nil, err
-			}
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, err
-		}
-		// 推广提成：按下级余额实付部分（扣除包内次数/条数对应的成本后）计提给其归属推广商
-		s.accrueCommission(userID, pack.Product, balancePart, int64(pack.TotalCount), "user_resource_pack", up.ID, fmt.Sprintf("购买资源包：%s（余额支付）", pack.Name))
-		return &PurchaseResourcePackResult{
-			UserPack:           up,
-			FullyPaidByBalance: true,
-			BalanceAmount:      balancePart,
-		}, nil
+		return &OnlinePaymentPrep{Order: order, BalancePart: total, ExternalPart: 0, BalanceBefore: balance}, nil
 	}
 
-	// 需要外部支付：构造待支付单（不落库，余额部分已扣）
-	order := s.newPaymentOrder(userID, externalPart, channel, paymentIntentResourcePack, fmt.Sprintf("%d", pack.ID), balancePart)
+	// 单日在线支付限额：按本次实际在线支付金额校验
+	if err := s.CheckDailyOnlineLimit(userID, externalPart); err != nil {
+		return nil, err
+	}
 
+	if balancePart > 0 {
+		if err := s.userRepo.UpdateUserBalanceTx(tx, userID, balance-balancePart); err != nil {
+			return nil, err
+		}
+	}
+	changed, err := s.paymentRepo.BindOnlinePaymentTx(tx, order.ID, channel, "", externalPart, balancePart)
+	if err != nil {
+		return nil, err
+	}
+	if !changed {
+		return nil, fmt.Errorf("订单状态已变更，无法支付")
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &PurchaseResourcePackResult{
-		PaymentOrder:   order,
-		Pack:           pack,
-		BalanceAmount:  balancePart,
-		ExternalAmount: externalPart,
-		BalanceBefore:  balance,
-	}, nil
+
+	order.Amount, order.BalanceAmount, order.Channel = externalPart, balancePart, channel
+	return &OnlinePaymentPrep{Order: order, BalancePart: balancePart, ExternalPart: externalPart, BalanceBefore: balance}, nil
 }
 
-// ConfirmResourcePackOrder 上游支付信息生成成功后落库资源包待支付单 + 余额部分账单（新事务）
-func (s *BalanceService) ConfirmResourcePackOrder(result *PurchaseResourcePackResult) error {
-	order := result.PaymentOrder
-	if order == nil {
-		return fmt.Errorf("资源包待支付单为空")
-	}
-	if order.ID > 0 {
-		// 复用已有待支付单，不重复落库/记账
-		return nil
-	}
+// BindOrderPayInfo 回填订单的渠道支付信息（上游取支付链接成功后）
+func (s *BalanceService) BindOrderPayInfo(orderID int64, payInfo string) error {
+	return s.paymentRepo.UpdatePayInfo(orderID, payInfo)
+}
 
+// RevertOrderOnlinePayment 上游取支付链接失败时回滚：退还本次抵扣余额并复位订单为未选渠道的待支付单
+func (s *BalanceService) RevertOrderOnlinePayment(userID int64, payOrderNo string, total float64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	if err := s.paymentRepo.CreateOrderTx(tx, order); err != nil {
+	order, err := s.paymentRepo.GetOrderByPayOrderNoForUpdateTx(tx, payOrderNo)
+	if err != nil {
 		return err
 	}
-
-	// 记录统一账单（组合支付：余额部分先行记账，外部支付部分由支付成功落地时补记）
-	if result.BalanceAmount > 0 {
-		bill := &model.Bill{
-			UserID:        order.UserID,
-			Product:       result.Pack.Product,
-			Service:       result.Pack.Product,
-			BillType:      model.BillTypeConsume,
-			SpendType:     model.SpendTypePackPurchase,
-			PayType:       model.PayTypeBalance,
-			Amount:        result.BalanceAmount,
-			BalanceBefore: result.BalanceBefore,
-			BalanceAfter:  result.BalanceBefore - result.BalanceAmount,
-			RefType:       "resource_pack",
-			RefID:         result.Pack.ID,
-			PayOrderID:    order.ID,
-			Remark:        fmt.Sprintf("购买资源包：%s（余额支付部分）", result.Pack.Name),
-		}
-		if err := s.writeBillTx(tx, bill); err != nil {
-			return err
-		}
+	if order.UserID != userID {
+		return repository.ErrPaymentOrderNotFound
 	}
-
+	if order.Status != 0 {
+		return nil
+	}
+	if err := s.resetOrderBindingTx(tx, order, total); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
-// RollbackResourcePackReservation 上游支付信息生成失败回滚（事务）：退还余额支付部分并写退款流水。
-// 未落库的待支付单不会产生任何支付记录。
-func (s *BalanceService) RollbackResourcePackReservation(result *PurchaseResourcePackResult) error {
-	order := result.PaymentOrder
-	if order == nil {
-		return nil
-	}
-
+// CancelOrder 取消待支付订单（0→3），并退还已抵扣的余额
+func (s *BalanceService) CancelOrder(userID int64, payOrderNo string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	// 退还余额支付部分
+	order, err := s.paymentRepo.GetOrderByPayOrderNoForUpdateTx(tx, payOrderNo)
+	if err != nil {
+		return err
+	}
+	if order.UserID != userID {
+		return repository.ErrPaymentOrderNotFound
+	}
+	if order.Status != 0 {
+		return fmt.Errorf("订单状态已变更，无法取消")
+	}
+	changed, err := s.paymentRepo.CloseOrderIfPendingTx(tx, order.ID)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return tx.Commit()
+	}
 	if order.BalanceAmount > 0 {
-		balance, err := s.userRepo.GetBalanceForUpdateTx(tx, order.UserID)
-		if err != nil {
-			return err
-		}
-		newBalance := balance + order.BalanceAmount
-		if err := s.userRepo.UpdateUserBalanceTx(tx, order.UserID, newBalance); err != nil {
+		if err := s.refundBalanceTx(tx, order.UserID, order.BalanceAmount, order.ID, "取消订单，退还抵扣余额"); err != nil {
 			return err
 		}
 	}
-
 	return tx.Commit()
 }
 
@@ -545,11 +780,11 @@ func (s *BalanceService) SettleResourcePackPaid(orderID int64, channelTradeNo st
 		}
 		return nil
 	}
-	packID, err := strconv.ParseInt(order.BizNo, 10, 64)
+	product, packID, err := parsePackBizNo(order.BizNo)
 	if err != nil {
-		return fmt.Errorf("资源包支付单关联单号非法: %w", err)
+		return err
 	}
-	pack, err := s.resourcePackRepo.GetPackByID(packID)
+	target, err := s.packTargetForSettle(product, packID)
 	if err != nil {
 		return err
 	}
@@ -569,32 +804,51 @@ func (s *BalanceService) SettleResourcePackPaid(orderID int64, channelTradeNo st
 		return tx.Commit()
 	}
 
-	up := &model.UserResourcePack{
-		UserID:         order.UserID,
-		TotalCount:     pack.TotalCount,
-		RemainingCount: pack.TotalCount,
-		Product:        pack.Product,                       // 产品快照：消费端按此匹配资源包，缺省会导致已购包无法抵扣
-		Price:          order.Amount + order.BalanceAmount, // 价格快照：第三方支付部分 + 余额支付部分
-		Status:         1,
-	}
-	if err := s.resourcePackRepo.CreateUserPackTx(tx, up); err != nil {
-		return err
+	total := order.Amount + order.BalanceAmount // 价格快照：第三方支付部分 + 余额支付部分
+	refType := "user_resource_pack"
+	var refID int64
+	if target.IsSms {
+		up := &model.SmsUserResourcePack{
+			UserID:         order.UserID,
+			TotalCount:     target.TotalCount,
+			RemainingCount: target.TotalCount,
+			Product:        target.Product, // 类型快照：消费端按此与模板类型匹配
+			Price:          total,
+			Status:         1,
+		}
+		if err := s.smsResourcePackRepo.CreateUserPackTx(tx, up); err != nil {
+			return err
+		}
+		refType, refID = "sms_user_resource_pack", up.ID
+	} else {
+		up := &model.UserResourcePack{
+			UserID:         order.UserID,
+			TotalCount:     target.TotalCount,
+			RemainingCount: target.TotalCount,
+			Product:        target.Product, // 产品快照：消费端按此匹配资源包，缺省会导致已购包无法抵扣
+			Price:          total,
+			Status:         1,
+		}
+		if err := s.resourcePackRepo.CreateUserPackTx(tx, up); err != nil {
+			return err
+		}
+		refType, refID = "user_resource_pack", up.ID
 	}
 	// 记录统一账单（组合支付：第三方支付部分落地补账）
 	bill := &model.Bill{
 		UserID:        order.UserID,
-		Product:       pack.Product,
-		Service:       pack.Product,
+		Product:       target.Product,
+		Service:       target.Product,
 		BillType:      model.BillTypeConsume,
 		SpendType:     model.SpendTypePackPurchase,
 		PayType:       model.PayTypeOfChannel(order.Channel),
 		Amount:        order.Amount,
 		BalanceBefore: order.BalanceAmount,
 		BalanceAfter:  order.BalanceAmount,
-		RefType:       "user_resource_pack",
-		RefID:         up.ID,
+		RefType:       refType,
+		RefID:         refID,
 		PayOrderID:    order.ID,
-		Remark:        fmt.Sprintf("购买资源包：%s（%s）", pack.Name, channelLabel(order.Channel)),
+		Remark:        fmt.Sprintf("购买资源包：%s（%s）", target.Name, channelLabel(order.Channel)),
 	}
 	if err := s.writeBillTx(tx, bill); err != nil {
 		return err
@@ -604,13 +858,13 @@ func (s *BalanceService) SettleResourcePackPaid(orderID int64, channelTradeNo st
 	}
 
 	// 推广提成：按本次支付的全部金额（余额部分 + 第三方支付部分，扣除成本后）计提给用户归属推广商
-	s.accrueCommission(order.UserID, pack.Product, order.Amount+order.BalanceAmount, int64(pack.TotalCount), "user_resource_pack", up.ID, fmt.Sprintf("购买资源包：%s", pack.Name))
+	s.accrueCommission(order.UserID, target.Product, total, int64(target.TotalCount), refType, refID, fmt.Sprintf("购买资源包：%s", target.Name))
 	audit.Log("pack_issue",
-		audit.KV("user_pack_id", up.ID),
+		audit.KV("user_pack_id", refID),
 		audit.KV("user_id", order.UserID),
-		audit.KV("pack_id", pack.ID),
-		audit.KV("product", pack.Product),
-		audit.KV("total_count", pack.TotalCount),
+		audit.KV("pack_id", target.PackID),
+		audit.KV("product", target.Product),
+		audit.KV("total_count", target.TotalCount),
 		audit.KV("pay_order_no", order.PayOrderNo),
 		audit.KV("channel", order.Channel))
 	return nil
@@ -1164,144 +1418,6 @@ func (s *BalanceService) ManualRechargeBalance(userID int64, amount float64, rem
 	}
 
 	return tx.Commit()
-}
-
-// PurchaseResourcePack 使用余额购买资源包（从余额扣费，不支持直接为资源包付费）
-// 在单个事务中完成：锁定余额并扣费 → 记录余额流水 → 创建用户资源包
-func (s *BalanceService) PurchaseResourcePack(userID, packID int64) (*model.UserResourcePack, error) {
-	// 查询资源包
-	pack, err := s.resourcePackRepo.GetPackByID(packID)
-	if err != nil {
-		return nil, err
-	}
-	if pack.Status != 1 {
-		return nil, repository.ErrPackOffSale
-	}
-
-	// 开启事务
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	// 锁定余额并校验是否充足
-	balance, err := s.userRepo.GetBalanceForUpdateTx(tx, userID)
-	if err != nil {
-		return nil, err
-	}
-	if balance < pack.Price {
-		return nil, ErrInsufficientBalance
-	}
-
-	// 扣除余额
-	newBalance := balance - pack.Price
-	if err := s.userRepo.UpdateUserBalanceTx(tx, userID, newBalance); err != nil {
-		return nil, err
-	}
-
-	// 创建用户资源包（次数快照）
-	up := &model.UserResourcePack{
-		UserID:         userID,
-		TotalCount:     pack.TotalCount,
-		RemainingCount: pack.TotalCount,
-		Product:        pack.Product,
-		Price:          pack.Price,
-		Status:         1,
-	}
-	if err := s.resourcePackRepo.CreateUserPackTx(tx, up); err != nil {
-		return nil, err
-	}
-
-	// 记录统一账单（余额购买资源包）
-	bill := &model.Bill{
-		UserID:        userID,
-		Product:       pack.Product,
-		Service:       pack.Product,
-		BillType:      model.BillTypeConsume,
-		SpendType:     model.SpendTypePackPurchase,
-		PayType:       model.PayTypeBalance,
-		Amount:        pack.Price,
-		BalanceBefore: balance,
-		BalanceAfter:  newBalance,
-		RefType:       "user_resource_pack",
-		RefID:         up.ID,
-		RefBizNo:      "",
-		Remark:        fmt.Sprintf("购买资源包：%s", pack.Name),
-	}
-	if err := s.writeBillTx(tx, bill); err != nil {
-		return nil, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return up, nil
-}
-
-// PurchaseSmsResourcePack 使用余额购买短信资源包（短信库独立资源包表，product 区分验证码/通知与营销）
-func (s *BalanceService) PurchaseSmsResourcePack(userID, packID int64) (*model.SmsUserResourcePack, error) {
-	pack, err := s.smsResourcePackRepo.GetPackByID(packID)
-	if err != nil {
-		return nil, err
-	}
-	if pack.Status != 1 {
-		return nil, repository.ErrPackOffSale
-	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	balance, err := s.userRepo.GetBalanceForUpdateTx(tx, userID)
-	if err != nil {
-		return nil, err
-	}
-	if balance < pack.Price {
-		return nil, ErrInsufficientBalance
-	}
-
-	newBalance := balance - pack.Price
-	if err := s.userRepo.UpdateUserBalanceTx(tx, userID, newBalance); err != nil {
-		return nil, err
-	}
-
-	up := &model.SmsUserResourcePack{
-		UserID:         userID,
-		TotalCount:     pack.TotalCount,
-		RemainingCount: pack.TotalCount,
-		Product:        pack.Product, // 类型快照：消费端按此与模板类型匹配
-		Price:          pack.Price,
-		Status:         1,
-	}
-	if err := s.smsResourcePackRepo.CreateUserPackTx(tx, up); err != nil {
-		return nil, err
-	}
-
-	bill := &model.Bill{
-		UserID:        userID,
-		Product:       model.ServiceSMS,
-		Service:       model.ServiceSMS,
-		BillType:      model.BillTypeConsume,
-		SpendType:     model.SpendTypePackPurchase,
-		PayType:       model.PayTypeBalance,
-		Amount:        pack.Price,
-		BalanceBefore: balance,
-		BalanceAfter:  newBalance,
-		RefType:       "sms_user_resource_pack",
-		RefID:         up.ID,
-		Remark:        fmt.Sprintf("购买短信资源包：%s", pack.Name),
-	}
-	if err := s.writeBillTx(tx, bill); err != nil {
-		return nil, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return up, nil
 }
 
 // 测试资源包默认条数与单次发放上限（管理员未填写条数时取默认值）

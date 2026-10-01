@@ -9,7 +9,7 @@
           </h3>
           <el-button @click="$router.back()">返回</el-button>
         </div>
-        <p class="purchase-tip">购买短信资源包将直接从余额扣费（请先充值再购买），购买后条数实时到账。</p>
+        <p class="purchase-tip">支持余额支付与支付宝/微信组合支付（余额不足时自动补差额），下单后在支付页选择支付方式完成付款，条数实时到账。</p>
 
         <div v-if="packs.length" class="pack-grid">
           <div v-for="pack in packs" :key="pack.id" class="pack-card">
@@ -29,7 +29,7 @@
                 :loading="purchasingId === pack.id"
                 @click="handlePurchase(pack)"
               >
-                购买
+                下单
               </el-button>
             </div>
           </div>
@@ -42,10 +42,12 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ShoppingCart } from '@element-plus/icons-vue'
-import { smsAPI } from '@/api'
+import { smsAPI, userAPI } from '@/api'
 
+const router = useRouter()
 const packs = ref<any[]>([])
 // 资源包 ID -> 当前用户适用售价（推广/单用户定价优先）
 const packPrices = ref<Record<string, number>>({})
@@ -72,8 +74,8 @@ const loadPacks = async () => {
 
 const handlePurchase = (pack: any) => {
   ElMessageBox.confirm(
-    `确认使用余额 ¥${packPrice(pack)} 购买「${pack.name}」？购买后将获得 ${pack.total_count} 条短信。`,
-    '确认购买',
+    `确认下单购买「${pack.name}」？应付 ¥${packPrice(pack)}，支付成功后将获得 ${pack.total_count} 条短信。`,
+    '确认下单',
     {
       confirmButtonText: '确定',
       cancelButtonText: '取消',
@@ -83,11 +85,15 @@ const handlePurchase = (pack: any) => {
     .then(async () => {
       purchasingId.value = pack.id
       try {
-        await smsAPI.purchasePack(pack.id)
-        ElMessage.success('购买成功')
-        await loadPacks()
+        const res: any = await userAPI.createOrder({
+          intent: 'resource_pack',
+          pack_id: pack.id,
+          product: pack.product
+        })
+        // 建单成功后跳转统一支付页选择支付方式
+        router.push(`/payment/${res.pay_order_no}`)
       } catch (error: any) {
-        ElMessage.error(error?.message || '购买失败')
+        ElMessage.error(error?.message || '下单失败')
       } finally {
         purchasingId.value = null
       }

@@ -21,13 +21,8 @@
               <template #append>元</template>
             </el-input>
           </el-form-item>
-          <el-form-item label="支付方式">
-            <el-radio-group v-model="rechargeForm.channel">
-              <el-radio v-for="ch in payChannelOptions" :key="ch.value" :value="ch.value">{{ ch.label }}</el-radio>
-            </el-radio-group>
-          </el-form-item>
           <el-button type="primary" @click="handleRecharge" :loading="rechargeLoading">
-            充值
+            创建订单
           </el-button>
         </el-form>
 
@@ -67,13 +62,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { RefreshLeft } from '@element-plus/icons-vue'
 import { userAPI } from '@/api'
 import { useUserStore } from '@/stores/user'
-import { PAY_CHANNEL_OPTIONS, loadEnabledPayChannels } from '@/utils/payment'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -87,21 +81,8 @@ const withdrawForm = reactive({ amount: '' })
 const withdrawLoading = ref(false)
 const withdrawable = ref(0)
 
-// 移动端走微信 H5 跳转，PC 端走 Native 扫码
-const isMobile = () => {
-  return (
-    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
-    (navigator.maxTouchPoints > 1 && window.innerWidth < 768)
-  )
-}
-
-// 已启用的在线支付渠道（未配置凭据的渠道不展示）
-const enabledChannels = ref<string[]>(['alipay', 'wechat'])
-const payChannelOptions = computed(() => PAY_CHANNEL_OPTIONS.filter((ch) => enabledChannels.value.includes(ch.value)))
-
 const rechargeForm = reactive({
-  amount: '',
-  channel: 'alipay'
+  amount: ''
 })
 
 const handleRecharge = async () => {
@@ -111,19 +92,11 @@ const handleRecharge = async () => {
   }
   rechargeLoading.value = true
   try {
-    const res = await userAPI.createRecharge({
-      amount: Number(rechargeForm.amount),
-      channel: rechargeForm.channel,
-      scene: rechargeForm.channel === 'wechat' && !isMobile() ? 'native' : 'h5'
+    const res: any = await userAPI.createOrder({
+      intent: 'recharge',
+      amount: Number(rechargeForm.amount)
     })
-
-    // 一次性支付信息（支付链接/二维码）存 sessionStorage，供支付详情页展示
-    sessionStorage.setItem(
-      `starloft_pay_${res.pay_order_no}`,
-      JSON.stringify({ ...res, pay_purpose: 'recharge', return_path: '/balance' })
-    )
-
-    // 跳转到支付详情页，避免支付完成后只能回到充值页面
+    // 建单成功后跳转统一支付页选择支付方式
     router.push(`/payment/${res.pay_order_no}`)
   } catch (error: any) {
     ElMessage.error(error?.message || '发起充值失败，请稍后重试')
@@ -177,13 +150,9 @@ const handleWithdraw = async () => {
   }
 }
 
-onMounted(async () => {
+onMounted(() => {
   loadData()
   loadWithdrawable()
-  enabledChannels.value = await loadEnabledPayChannels()
-  if (!enabledChannels.value.includes(rechargeForm.channel)) {
-    rechargeForm.channel = enabledChannels.value[0] || 'alipay'
-  }
 })
 </script>
 

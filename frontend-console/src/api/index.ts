@@ -143,14 +143,29 @@ export const userAPI = {
     return request.get('/stats/calls')
   },
 
-  // 发起充值
-  createRecharge: (data: { amount: number; channel: string; scene?: string }) => {
-    return request.post('/recharge', data)
+  // 创建未支付订单（intent: recharge-充值 / resource_pack-购买资源包）
+  createOrder: (data: { intent: 'recharge' | 'resource_pack'; amount?: number; pack_id?: number; product?: string }) => {
+    return request.post('/orders', data)
   },
 
-  // 查询充值结果（轮询）
-  getRechargeResult: (params: { pay_order_no: string }) => {
-    return request.get('/recharge/result', { params })
+  // 我的订单列表（status 省略时默认只返回待支付）
+  listOrders: (params?: { status?: number }) => {
+    return request.get('/orders', { params })
+  },
+
+  // 订单详情（支付页与轮询共用）
+  getOrder: (payOrderNo: string) => {
+    return request.get(`/orders/${payOrderNo}`)
+  },
+
+  // 支付订单（余额全额付清 / 支付宝 / 微信，在线渠道可用余额抵扣差额）
+  payOrder: (payOrderNo: string, data: { method: 'balance' | 'alipay' | 'wechat'; scene?: 'native' | 'h5'; use_balance?: boolean }) => {
+    return request.post(`/orders/${payOrderNo}/pay`, data)
+  },
+
+  // 取消待支付订单
+  cancelOrder: (payOrderNo: string) => {
+    return request.post(`/orders/${payOrderNo}/cancel`)
   },
 
   // 查询可提现（可退款）的充值支付订单与总额
@@ -191,16 +206,6 @@ export const userAPI = {
   // 获取在售资源包列表（可选按 product 筛选）
   listPacks: (product?: string) => {
     return request.get('/packs', { params: product ? { product } : {} })
-  },
-
-  // 使用余额购买资源包
-  purchasePack: (id: number) => {
-    return request.post(`/packs/${id}/purchase`)
-  },
-
-  // 在线购买资源包（余额 + 支付宝/微信组合支付）
-  payPack: (id: number, data: { channel: string; scene?: string }) => {
-    return request.post(`/packs/${id}/pay`, data)
   },
 
   // 我的资源包列表
@@ -333,11 +338,6 @@ export const smsAPI = {
   // 在售短信资源包列表（短信库独立表）
   listPacks: () => {
     return request.get('/sms/packs')
-  },
-
-  // 使用余额购买短信资源包
-  purchasePack: (id: number) => {
-    return request.post(`/sms/packs/${id}/purchase`)
   },
 
   // 我的短信资源包列表

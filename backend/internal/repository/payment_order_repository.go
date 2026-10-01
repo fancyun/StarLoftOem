@@ -263,6 +263,64 @@ func (r *PaymentOrderRepository) GetOrderByPayOrderNo(payOrderNo string) (*model
 	return order, nil
 }
 
+// GetOrderByPayOrderNoForUpdateTx 在事务中按支付流水号锁定并查询订单（FOR UPDATE）。
+// 支付与取消订单流程用它串行化同一订单的并发操作，避免重复扣款/重复退款。
+func (r *PaymentOrderRepository) GetOrderByPayOrderNoForUpdateTx(tx *sql.Tx, payOrderNo string) (*model.PaymentOrder, error) {
+	query := `SELECT id, pay_order_no, user_id, amount, 
+		channel, COALESCE(channel_trade_no, ''), status, expire_time, paid_at, created_at, updated_at, 
+		refund_status, COALESCE(refund_amount, 0), refunded_at, intent, COALESCE(biz_no, ''), 
+		COALESCE(balance_amount, 0), COALESCE(stock_reserved, 0), COALESCE(pay_info, '') 
+		FROM ` + model.SysDB + `.payment_order WHERE pay_order_no = ? FOR UPDATE`
+
+	order := &model.PaymentOrder{}
+	err := tx.QueryRow(query, payOrderNo).Scan(
+		&order.ID,
+		&order.PayOrderNo,
+		&order.UserID,
+		&order.Amount,
+		&order.Channel,
+		&order.ChannelTradeNo,
+		&order.Status,
+		&order.ExpireTime,
+		&order.PaidAt,
+		&order.CreatedAt,
+		&order.UpdatedAt,
+		&order.RefundStatus,
+		&order.RefundAmount,
+		&order.RefundedAt,
+		&order.Intent,
+		&order.BizNo,
+		&order.BalanceAmount,
+		&order.StockReserved,
+		&order.PayInfo,
+	)
+	if err == sql.ErrNoRows {
+		return nil, ErrPaymentOrderNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return order, nil
+}
+
+// RevertOnlinePaymentTx 事务内复位待支付订单的在线渠道绑定与余额抵扣（回到「未选渠道」形态）。
+// 用于上游取支付链接失败、或用户重新选择支付方式；仅 status=0 时生效。
+func (r *PaymentOrderRepository) RevertOnlinePaymentTx(tx *sql.Tx, orderID int64, totalAmount float64) error {
+	query := `UPDATE ` + model.SysDB + `.payment_order 
+		SET channel = '', pay_info = '', amount = ?, balance_amount = 0, updated_at = ? 
+		WHERE id = ? AND status = 0`
+	_, err := tx.Exec(query, totalAmount, time.Now(), orderID)
+	return err
+}
+
+// UpdatePayInfo 回填订单的渠道支付信息（上游取支付链接成功后；仅 status=0 时生效）
+func (r *PaymentOrderRepository) UpdatePayInfo(orderID int64, payInfo string) error {
+	query := `UPDATE ` + model.SysDB + `.payment_order 
+		SET pay_info = ?, updated_at = ? WHERE id = ? AND status = 0`
+	_, err := r.db.Exec(query, payInfo, time.Now(), orderID)
+	return err
+}
+
 // MarkOrderPaidIfPending 仅当订单仍为待支付时更新为已支付（幂等）
 // 返回是否发生了状态变更
 func (r *PaymentOrderRepository) MarkOrderPaidIfPending(orderID int64, channelTradeNo string) (bool, error) {
@@ -326,6 +384,86 @@ func (r *PaymentOrderRepository) CloseOrderIfPending(orderID int64) (bool, error
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// BindOnlinePaymentTx 事务内为待支付订单绑定在线渠道：回填 channel / pay_info、外部支付金额与余额抵扣额。
+// 仅 status=0 时生效（已支付/已关闭的订单不被覆盖），返回是否发生了绑定。
+func (r *PaymentOrderRepository) BindOnlinePaymentTx(tx *sql.Tx, orderID int64, channel, payInfo string, amount, balanceAmount float64) (bool, error) {
+	query := `UPDATE ` + model.SysDB + `.payment_order 
+		SET channel = ?, pay_info = ?, amount = ?, balance_amount = ?, updated_at = ? 
+		WHERE id = ? AND status = 0`
+	result, err := tx.Exec(query, channel, payInfo, amount, balanceAmount, time.Now(), orderID)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// MarkOrderPaidWithChannelTx 事务内将待支付订单置为已支付并回填渠道与金额（余额全额支付用，幂等，仅 status=0）
+func (r *PaymentOrderRepository) MarkOrderPaidWithChannelTx(tx *sql.Tx, orderID int64, channel string, amount, balanceAmount float64) (bool, error) {
+	query := `UPDATE ` + model.SysDB + `.payment_order 
+		SET status = 1, channel = ?, amount = ?, balance_amount = ?, paid_at = ?, updated_at = ? 
+		WHERE id = ? AND status = 0`
+	result, err := tx.Exec(query, channel, amount, balanceAmount, time.Now(), time.Now(), orderID)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// ListUnpaidByUser 查询用户仍未过期的待支付订单（新→旧），供控制台「我的订单」页使用
+func (r *PaymentOrderRepository) ListUnpaidByUser(userID int64) ([]*model.PaymentOrder, error) {
+	query := `SELECT id, pay_order_no, user_id, amount, 
+		channel, COALESCE(channel_trade_no, ''), status, expire_time, paid_at, created_at, updated_at, 
+		refund_status, COALESCE(refund_amount, 0), refunded_at, intent, COALESCE(biz_no, ''), 
+		COALESCE(balance_amount, 0), COALESCE(stock_reserved, 0), COALESCE(pay_info, '') 
+		FROM ` + model.SysDB + `.payment_order 
+		WHERE user_id = ? AND status = 0 AND expire_time IS NOT NULL AND expire_time > ?
+		ORDER BY id DESC`
+
+	rows, err := r.db.Query(query, userID, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	orders := make([]*model.PaymentOrder, 0)
+	for rows.Next() {
+		order := &model.PaymentOrder{}
+		if err := rows.Scan(
+			&order.ID,
+			&order.PayOrderNo,
+			&order.UserID,
+			&order.Amount,
+			&order.Channel,
+			&order.ChannelTradeNo,
+			&order.Status,
+			&order.ExpireTime,
+			&order.PaidAt,
+			&order.CreatedAt,
+			&order.UpdatedAt,
+			&order.RefundStatus,
+			&order.RefundAmount,
+			&order.RefundedAt,
+			&order.Intent,
+			&order.BizNo,
+			&order.BalanceAmount,
+			&order.StockReserved,
+			&order.PayInfo,
+		); err != nil {
+			return nil, err
+		}
+		orders = append(orders, order)
+	}
+	return orders, rows.Err()
 }
 
 // GetPendingOrdersForReconcile 查询早于指定时间创建、仍待支付的支付订单（用于每日对账）
@@ -422,17 +560,17 @@ func (r *PaymentOrderRepository) GetExpiredPendingOrders(now time.Time) ([]*mode
 }
 
 // GetPendingOrder 支付查重：查询用户指定用途下仍未过期（expire_time > now）的待支付单（status=0）。
-// amount 大于 0 时同时匹配订单金额（充值单金额固定，用于防止复用不同金额的待支付单）；
-// 资源包单金额为外部支付部分（随余额支付比例变化），传 0 按 biz_no 精确匹配即可。
-func (r *PaymentOrderRepository) GetPendingOrder(userID int64, intent, bizNo, channel string, amount float64) (*model.PaymentOrder, error) {
+// 两阶段下单后建单阶段不选渠道，故不再按 channel 过滤；amount 为应付总额（建单时固定），
+// 传大于 0 时同时匹配金额，避免复用到金额不同的待支付单。
+func (r *PaymentOrderRepository) GetPendingOrder(userID int64, intent, bizNo string, amount float64) (*model.PaymentOrder, error) {
 	query := `SELECT id, pay_order_no, user_id, amount, 
 		channel, COALESCE(channel_trade_no, ''), status, expire_time, paid_at, created_at, updated_at, 
 		refund_status, COALESCE(refund_amount, 0), refunded_at, intent, COALESCE(biz_no, ''), 
 		COALESCE(balance_amount, 0), COALESCE(stock_reserved, 0), COALESCE(pay_info, '') 
 		FROM ` + model.SysDB + `.payment_order 
-		WHERE user_id = ? AND intent = ? AND COALESCE(biz_no, '') = ? AND channel = ?
+		WHERE user_id = ? AND intent = ? AND COALESCE(biz_no, '') = ?
 		  AND status = 0 AND expire_time IS NOT NULL AND expire_time > ?`
-	args := []interface{}{userID, intent, bizNo, channel, time.Now()}
+	args := []interface{}{userID, intent, bizNo, time.Now()}
 	if amount > 0 {
 		query += ` AND amount = ?`
 		args = append(args, amount)

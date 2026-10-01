@@ -15,6 +15,7 @@
           @keyup.enter="onFilterChange"
         />
         <el-select v-model="filters.channel" placeholder="支付渠道" clearable style="width: 150px" @change="onFilterChange">
+          <el-option label="余额支付" value="balance" />
           <el-option label="支付宝" value="alipay" />
           <el-option label="微信支付" value="wechat" />
           <el-option label="人工支付" value="manual" />
@@ -156,8 +157,8 @@ const loadOrders = async () => {
 }
 
 const getChannelText = (channel: string) => {
-  const map: Record<string, string> = { alipay: '支付宝', wechat: '微信支付', manual: '人工支付' }
-  return map[channel] || channel
+  const map: Record<string, string> = { balance: '余额支付', alipay: '支付宝', wechat: '微信支付', manual: '人工支付' }
+  return map[channel] || channel || '未选择'
 }
 
 const getPayStatusType = (status: number) => {

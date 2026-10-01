@@ -142,9 +142,10 @@ func (PaymentOrder) TableName() string { return SysDB + ".payment_order" }
 
 // 支付渠道
 const (
-	ChannelAlipay = "alipay" // 支付宝
-	ChannelWechat = "wechat" // 微信支付
-	ChannelManual = "manual" // 人工支付
+	ChannelBalance = "balance" // 余额支付（订单金额全额由余额抵扣）
+	ChannelAlipay  = "alipay"  // 支付宝
+	ChannelWechat  = "wechat"  // 微信支付
+	ChannelManual  = "manual"  // 人工支付
 )
 
 type PaymentOrder struct {
@@ -153,7 +154,7 @@ type PaymentOrder struct {
 	UserID         int64      `json:"user_id" gorm:"not null;index"`
 	UserPhone      string     `json:"user_phone,omitempty" gorm:"-"`                           // 联表查询时的用户手机号（管理后台支付记录用）
 	Amount         float64    `json:"amount" gorm:"type:decimal(10,2);not null"`               // 充值金额（元）
-	Channel        string     `json:"channel" gorm:"size:20;not null"`                         // 支付渠道：alipay-支付宝 wechat-微信 manual-人工支付
+	Channel        string     `json:"channel" gorm:"size:20;not null"`                         // 支付渠道：balance-余额支付 alipay-支付宝 wechat-微信 manual-人工支付（建单后未选渠道时为空串）
 	ChannelTradeNo string     `json:"channel_trade_no,omitempty" gorm:"size:100"`              // 渠道交易号（支付宝 trade_no）
 	BankSerialNo   string     `json:"bank_serial_no,omitempty" gorm:"size:100;index"`          // 银行流水单号（人工支付唯一账单键：账号_记账时间_交易流水号）
 	Status         int        `json:"status" gorm:"type:tinyint;not null;default:0;index"`     // 0-待支付 1-已支付 2-已退款 3-已关闭
@@ -163,10 +164,10 @@ type PaymentOrder struct {
 	PaidAt         *time.Time `json:"paid_at,omitempty"`                                       // 支付时间
 	RefundedAt     *time.Time `json:"refunded_at,omitempty"`                                   // 退款时间
 	Intent         string     `json:"intent" gorm:"size:20;not null;default:'recharge';index"` // 支付用途：recharge-余额充值 resource_pack-购买资源包
-	BizNo          string     `json:"biz_no,omitempty" gorm:"size:50;index"`                   // 关联业务单号（购买资源包时为资源包ID）
+	BizNo          string     `json:"biz_no,omitempty" gorm:"size:50;index"`                   // 关联业务单号（购买资源包时为「产品标识:资源包ID」，如 fv_auth:3 / sms:3）
 	BalanceAmount  float64    `json:"balance_amount" gorm:"type:decimal(10,2);default:0"`      // 组合支付中的余额支付部分
 	StockReserved  int        `json:"stock_reserved" gorm:"type:tinyint;not null;default:0"`   // 历史字段：资源包占库存标记（当前业务无库存概念，恒为 0）
-	PayInfo        string     `json:"pay_info,omitempty" gorm:"type:text"`                     // 渠道支付信息 JSON（支付宝 pay_url/微信 code_url/h5_url），供复用待支付单时返回
+	PayInfo        string     `json:"pay_info,omitempty" gorm:"type:text"`                     // 渠道支付信息 JSON（支付宝 pay_url/微信 code_url），供复用待支付单时返回
 	CreatedAt      time.Time  `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt      time.Time  `json:"updated_at" gorm:"autoUpdateTime"`
 }

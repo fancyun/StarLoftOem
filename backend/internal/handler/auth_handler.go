@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -714,203 +715,6 @@ func (h *AuthHandler) GetUserAuthCallStats(c *gin.Context) {
 	})
 }
 
-// CreateRecharge 发起充值（在线支付渠道：支付宝电脑网站支付 / 微信扫码与 H5）
-func (h *AuthHandler) CreateRecharge(c *gin.Context) {
-	userID := c.GetInt64("user_id")
-
-	var req struct {
-		Amount  float64 `json:"amount" binding:"required,gt=0"`
-		Channel string  `json:"channel" binding:"required"`
-		Scene   string  `json:"scene"` // 扫码类渠道场景：native-扫码（PC） h5-移动端跳转
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    400,
-			"message": "invalid request parameters",
-		})
-		return
-	}
-
-	if req.Channel != model.ChannelAlipay && req.Channel != model.ChannelWechat {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    400,
-			"message": "不支持的支付渠道",
-		})
-		return
-	}
-
-	// 构造待支付单（不落库）：先调上游生成支付信息，成功后再落库
-	order, err := h.balanceService.PrepareRecharge(userID, req.Amount, req.Channel)
-	if err != nil {
-		if errors.Is(err, service.ErrDailyOnlineLimitExceeded) {
-			c.JSON(http.StatusOK, gin.H{
-				"code":    400,
-				"message": err.Error(),
-			})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"code":    500,
-			"message": "failed to create recharge order",
-		})
-		return
-	}
-
-	// 已存在未过期的待支付单（支付查重命中）：直接复用首次下单时保存的渠道支付信息，不重复调上游/建单
-	if order.ID > 0 {
-		if order.PayInfo == "" {
-			c.JSON(http.StatusOK, gin.H{"code": 500, "message": "支付信息缺失，请重新发起"})
-			return
-		}
-		var payInfo map[string]interface{}
-		if err := json.Unmarshal([]byte(order.PayInfo), &payInfo); err != nil {
-			c.JSON(http.StatusOK, gin.H{"code": 500, "message": "支付信息解析失败"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": payInfo})
-		return
-	}
-
-	data := gin.H{
-		"pay_order_no": order.PayOrderNo,
-		"amount":       order.Amount,
-		"expire_time":  order.ExpireTime.Unix(),
-		"channel":      order.Channel,
-	}
-
-	// 按渠道生成支付信息（上游失败不落库，不产生支付记录）
-	switch req.Channel {
-	case model.ChannelAlipay:
-		if h.alipay() == nil {
-			c.JSON(http.StatusOK, gin.H{
-				"code":    500,
-				"message": "支付宝支付未配置",
-			})
-			return
-		}
-		payURL, err := h.alipay().BuildPagePayURL(order.PayOrderNo, order.Amount, "账户余额充值", h.promotionService.SiteHosts(userID).ConsoleBase()+"/payment/")
-		if err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"code":    500,
-				"message": "生成支付宝支付链接失败",
-			})
-			return
-		}
-		data["pay_type"] = "url"
-		data["pay_url"] = payURL
-	case model.ChannelWechat:
-		if h.wechatPay() == nil {
-			c.JSON(http.StatusOK, gin.H{
-				"code":    500,
-				"message": "微信支付未配置",
-			})
-			return
-		}
-		if req.Scene == "h5" {
-			h5URL, err := h.wechatPay().CreateH5Order(order.PayOrderNo, order.Amount, "账户余额充值", c.ClientIP())
-			if err != nil {
-				log.Printf("微信 H5 下单失败 [pay_order_no=%s]: %v", order.PayOrderNo, err)
-				c.JSON(http.StatusOK, gin.H{"code": 500, "message": "微信支付下单失败"})
-				return
-			}
-			data["pay_type"] = "h5"
-			data["h5_url"] = h5URL
-		} else {
-			codeURL, err := h.wechatPay().CreateNativeOrder(order.PayOrderNo, order.Amount, "账户余额充值")
-			if err != nil {
-				log.Printf("微信 Native 下单失败 [pay_order_no=%s]: %v", order.PayOrderNo, err)
-				c.JSON(http.StatusOK, gin.H{"code": 500, "message": "微信支付下单失败"})
-				return
-			}
-			data["pay_type"] = "native"
-			data["code_url"] = codeURL
-		}
-	}
-
-	// 保存渠道支付信息到支付单（供支付查重命中时直接复用返回）
-	payInfoBytes, err := json.Marshal(data)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": "保存支付信息失败"})
-		return
-	}
-	order.PayInfo = string(payInfoBytes)
-
-	// 上游成功：落库支付单
-	if err := h.balanceService.CreateRechargeOrder(order); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    500,
-			"message": "保存充值订单失败",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "success",
-		"data":    data,
-	})
-}
-
-// GetRechargeResult 查询充值结果（轮询查询支付订单状态）
-func (h *AuthHandler) GetRechargeResult(c *gin.Context) {
-	userID := c.GetInt64("user_id")
-
-	var req struct {
-		PayOrderNo string `json:"pay_order_no" form:"pay_order_no" binding:"required"`
-	}
-
-	if err := c.ShouldBindQuery(&req); err != nil {
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"code":    400,
-				"message": "invalid request parameters",
-			})
-			return
-		}
-	}
-
-	// 查询支付订单
-	order, err := h.balanceService.GetPaymentOrder(req.PayOrderNo)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    404,
-			"message": "order not found",
-		})
-		return
-	}
-
-	// 检查订单是否属于该用户
-	if order.UserID != userID {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    403,
-			"message": "permission denied: order does not belong to you",
-		})
-		return
-	}
-
-	// 待支付时主动向渠道确认真实状态并落地（幂等，30 秒内每单最多一次），
-	// 避免异步回调延迟/丢失导致用户支付成功后界面仍显示未支付
-	if order.Status == 0 {
-		if fresh, rerr := h.balanceService.ReconcilePendingIfStale(order, h.alipay(), h.wechatPay()); rerr == nil && fresh != nil {
-			order = fresh
-		}
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "success",
-		"data": gin.H{
-			"pay_order_no":     order.PayOrderNo,
-			"amount":           order.Amount,
-			"status":           order.Status,
-			"channel":          order.Channel,
-			"channel_trade_no": order.ChannelTradeNo,
-			"paid_at":          order.PaidAt,
-		},
-	})
-}
-
 // ---------- 资源包（Web 用户） ----------
 
 // GetRefundableOrders 查询用户可提现（可退款）的已支付充值订单（Console 提现页）
@@ -990,6 +794,293 @@ func (h *AuthHandler) Withdraw(c *gin.Context) {
 	})
 }
 
+// ---------- 两阶段下单：建单 / 查询 / 支付 / 取消 ----------
+
+// orderDTO 订单对外结构。金额口径：amount 为外部支付金额、balance_amount 为余额抵扣额，
+// total_amount = 两者之和即应付总额（建单未选渠道时 amount 即应付总额）。
+func orderDTO(o *model.PaymentOrder) gin.H {
+	data := gin.H{
+		"pay_order_no":   o.PayOrderNo,
+		"intent":         o.Intent,
+		"status":         o.Status,
+		"channel":        o.Channel,
+		"amount":         o.Amount,
+		"balance_amount": o.BalanceAmount,
+		"total_amount":   o.Amount + o.BalanceAmount,
+		"expire_time":    int64(0),
+		"biz_no":         o.BizNo,
+		"created_at":     o.CreatedAt,
+	}
+	if o.ExpireTime != nil {
+		data["expire_time"] = o.ExpireTime.Unix()
+	}
+	if o.PaidAt != nil {
+		data["paid_at"] = o.PaidAt
+	}
+	// 资源包订单：从业务单号拆出产品标识与资源包 ID，供前端展示与返回路径选择
+	if o.Intent == service.PaymentIntentResourcePack {
+		if product, packID, ok := splitPackBizNo(o.BizNo); ok {
+			data["product"] = product
+			data["pack_id"] = packID
+		}
+	}
+	return data
+}
+
+// splitPackBizNo 解析资源包订单业务单号（`产品标识:资源包ID`）
+func splitPackBizNo(bizNo string) (string, int64, bool) {
+	product, idStr, ok := strings.Cut(bizNo, ":")
+	if !ok {
+		return "", 0, false
+	}
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		return "", 0, false
+	}
+	return product, id, true
+}
+
+// orderPayMethods 订单可用支付方式：余额（仅购买资源包）+ 已启用的在线渠道
+func (h *AuthHandler) orderPayMethods(intent string) []string {
+	methods := make([]string, 0, 3)
+	if intent == service.PaymentIntentResourcePack {
+		methods = append(methods, model.ChannelBalance)
+	}
+	if h.alipay() != nil {
+		methods = append(methods, model.ChannelAlipay)
+	}
+	if h.wechatPay() != nil {
+		methods = append(methods, model.ChannelWechat)
+	}
+	return methods
+}
+
+// CreateOrder 建未支付订单（两阶段下单第一阶段：不扣余额、不选渠道、不调上游）
+// POST /console/orders body: {intent, amount?, pack_id?, product?}
+func (h *AuthHandler) CreateOrder(c *gin.Context) {
+	userID := c.GetInt64("user_id")
+
+	var req struct {
+		Intent  string  `json:"intent" binding:"required"`
+		Amount  float64 `json:"amount"`
+		PackID  int64   `json:"pack_id"`
+		Product string  `json:"product"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": "参数错误"})
+		return
+	}
+
+	order, err := h.balanceService.CreateOrder(userID, req.Intent, req.Product, req.PackID, req.Amount)
+	if err != nil {
+		h.respondPackPurchaseError(c, err)
+		return
+	}
+
+	balance, _ := h.balanceService.GetUserBalance(userID)
+	data := orderDTO(order)
+	data["balance_available"] = balance
+	data["pay_methods"] = h.orderPayMethods(order.Intent)
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": data})
+}
+
+// ListOrders 我的待支付订单（「继续支付」入口）
+// GET /console/orders
+func (h *AuthHandler) ListOrders(c *gin.Context) {
+	userID := c.GetInt64("user_id")
+
+	orders, err := h.balanceService.ListUnpaidOrders(userID)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 500, "message": "查询订单失败"})
+		return
+	}
+	balance, _ := h.balanceService.GetUserBalance(userID)
+
+	list := make([]gin.H, 0, len(orders))
+	for _, o := range orders {
+		item := orderDTO(o)
+		item["balance_available"] = balance
+		item["pay_methods"] = h.orderPayMethods(o.Intent)
+		list = append(list, item)
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": gin.H{"list": list}})
+}
+
+// GetOrder 订单详情（支付页展示与轮询共用；待支付单顺带按需向渠道对账一次）
+// GET /console/orders/:pay_order_no
+func (h *AuthHandler) GetOrder(c *gin.Context) {
+	userID := c.GetInt64("user_id")
+
+	order, err := h.balanceService.GetOrderForUser(userID, c.Param("pay_order_no"))
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 404, "message": "订单不存在"})
+		return
+	}
+	if order.Status == 0 {
+		if updated, rerr := h.balanceService.ReconcilePendingIfStale(order, h.alipay(), h.wechatPay()); rerr == nil && updated != nil {
+			order = updated
+		}
+	}
+
+	balance, _ := h.balanceService.GetUserBalance(userID)
+	data := orderDTO(order)
+	data["balance_available"] = balance
+	data["pay_methods"] = h.orderPayMethods(order.Intent)
+	if order.PayInfo != "" {
+		var payInfo map[string]interface{}
+		if err := json.Unmarshal([]byte(order.PayInfo), &payInfo); err == nil {
+			data["pay_info"] = payInfo
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": data})
+}
+
+// PayOrder 选定支付方式并支付（两阶段下单第二阶段）
+// POST /console/orders/:pay_order_no/pay body: {method, use_balance?, scene?}
+// method=balance 走余额全额支付；method=alipay/wechat 时 use_balance（默认 true）决定是否先用余额抵扣；
+// scene=h5 时微信走 H5 跳转，否则走 Native 扫码。
+func (h *AuthHandler) PayOrder(c *gin.Context) {
+	userID := c.GetInt64("user_id")
+	payOrderNo := c.Param("pay_order_no")
+
+	var req struct {
+		Method     string `json:"method" binding:"required"`
+		UseBalance *bool  `json:"use_balance"`
+		Scene      string `json:"scene"` // 扫码类渠道场景：native-扫码（PC） h5-移动端跳转
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": "参数错误"})
+		return
+	}
+
+	if req.Method != model.ChannelBalance && req.Method != model.ChannelAlipay && req.Method != model.ChannelWechat {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": "不支持的支付方式"})
+		return
+	}
+
+	// 余额全额支付：直接结算
+	if req.Method == model.ChannelBalance {
+		h.respondBalancePaid(c, userID, payOrderNo)
+		return
+	}
+
+	// 在线支付：默认勾选「使用余额抵扣」，取消勾选则全额走在线支付
+	useBalance := true
+	if req.UseBalance != nil {
+		useBalance = *req.UseBalance
+	}
+
+	prep, err := h.balanceService.PrepareOrderOnlinePayment(userID, payOrderNo, req.Method, useBalance)
+	if err != nil {
+		h.respondPackPurchaseError(c, err)
+		return
+	}
+	// 余额已覆盖全款：改走余额全额支付
+	if prep.ExternalPart <= 0 {
+		h.respondBalancePaid(c, userID, payOrderNo)
+		return
+	}
+
+	order := prep.Order
+	total := order.Amount + order.BalanceAmount
+	data := gin.H{
+		"pay_order_no": order.PayOrderNo,
+		"amount":       order.Amount,
+		"balance_part": order.BalanceAmount,
+		"total_amount": total,
+		"expire_time":  order.ExpireTime.Unix(),
+		"channel":      order.Channel,
+		"fully_paid":   false,
+	}
+
+	subject := "账户余额充值"
+	if order.Intent == service.PaymentIntentResourcePack {
+		subject = "购买资源包"
+	}
+
+	// 按渠道生成支付信息；上游失败回滚已抵扣余额并复位订单
+	switch req.Method {
+	case model.ChannelAlipay:
+		if h.alipay() == nil {
+			_ = h.balanceService.RevertOrderOnlinePayment(userID, order.PayOrderNo, total)
+			c.JSON(http.StatusOK, gin.H{"code": 500, "message": "支付宝支付未配置"})
+			return
+		}
+		payURL, err := h.alipay().BuildPagePayURL(order.PayOrderNo, order.Amount, subject, h.promotionService.SiteHosts(userID).ConsoleBase()+"/payment/")
+		if err != nil {
+			_ = h.balanceService.RevertOrderOnlinePayment(userID, order.PayOrderNo, total)
+			c.JSON(http.StatusOK, gin.H{"code": 500, "message": "生成支付宝支付链接失败"})
+			return
+		}
+		data["pay_type"] = "url"
+		data["pay_url"] = payURL
+	case model.ChannelWechat:
+		if h.wechatPay() == nil {
+			_ = h.balanceService.RevertOrderOnlinePayment(userID, order.PayOrderNo, total)
+			c.JSON(http.StatusOK, gin.H{"code": 500, "message": "微信支付未配置"})
+			return
+		}
+		if req.Scene == "h5" {
+			h5URL, err := h.wechatPay().CreateH5Order(order.PayOrderNo, order.Amount, subject, c.ClientIP())
+			if err != nil {
+				log.Printf("微信 H5 下单失败 [pay_order_no=%s]: %v", order.PayOrderNo, err)
+				_ = h.balanceService.RevertOrderOnlinePayment(userID, order.PayOrderNo, total)
+				c.JSON(http.StatusOK, gin.H{"code": 500, "message": "微信支付下单失败"})
+				return
+			}
+			data["pay_type"] = "h5"
+			data["h5_url"] = h5URL
+		} else {
+			codeURL, err := h.wechatPay().CreateNativeOrder(order.PayOrderNo, order.Amount, subject)
+			if err != nil {
+				log.Printf("微信 Native 下单失败 [pay_order_no=%s]: %v", order.PayOrderNo, err)
+				_ = h.balanceService.RevertOrderOnlinePayment(userID, order.PayOrderNo, total)
+				c.JSON(http.StatusOK, gin.H{"code": 500, "message": "微信支付下单失败"})
+				return
+			}
+			data["pay_type"] = "native"
+			data["code_url"] = codeURL
+		}
+	}
+
+	// 回填渠道支付信息（支付页刷新后按此恢复二维码/链接；失败则回滚已抵扣余额）
+	payInfoBytes, err := json.Marshal(data)
+	if err != nil || h.balanceService.BindOrderPayInfo(order.ID, string(payInfoBytes)) != nil {
+		_ = h.balanceService.RevertOrderOnlinePayment(userID, order.PayOrderNo, total)
+		c.JSON(http.StatusOK, gin.H{"code": 500, "message": "保存支付信息失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": data})
+}
+
+// respondBalancePaid 余额全额支付订单并返回发放的资源包
+func (h *AuthHandler) respondBalancePaid(c *gin.Context, userID int64, payOrderNo string) {
+	userPack, smsPack, err := h.balanceService.PayOrderWithBalance(userID, payOrderNo)
+	if err != nil {
+		h.respondPackPurchaseError(c, err)
+		return
+	}
+	data := gin.H{"fully_paid": true}
+	if userPack != nil {
+		data["user_pack"] = userPack
+	}
+	if smsPack != nil {
+		data["sms_user_pack"] = smsPack
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "支付成功", "data": data})
+}
+
+// CancelOrder 取消待支付订单（退还已抵扣的余额）
+// POST /console/orders/:pay_order_no/cancel
+func (h *AuthHandler) CancelOrder(c *gin.Context) {
+	userID := c.GetInt64("user_id")
+	if err := h.balanceService.CancelOrder(userID, c.Param("pay_order_no")); err != nil {
+		c.JSON(http.StatusOK, gin.H{"code": 400, "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "订单已取消"})
+}
 // ListResourcePacks 在售资源包列表（可选按 product 筛选，如 ?product=sms）
 // prices 为该用户适用的售价（推广/单用户定价优先），前端按此展示与下单。
 func (h *AuthHandler) ListResourcePacks(c *gin.Context) {
@@ -1027,54 +1118,6 @@ func (h *AuthHandler) ListResourcePacks(c *gin.Context) {
 	})
 }
 
-// PurchaseResourcePack 使用余额购买资源包（不支持直接为资源包付费，需先充值再购买）
-func (h *AuthHandler) PurchaseResourcePack(c *gin.Context) {
-	userID := c.GetInt64("user_id")
-	packID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || packID <= 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    400,
-			"message": "invalid pack id",
-		})
-		return
-	}
-
-	up, err := h.promotionService.PurchasePack(userID, packID)
-	if err != nil {
-		switch err {
-		case service.ErrInsufficientBalance:
-			c.JSON(http.StatusOK, gin.H{
-				"code":    400,
-				"message": "余额不足，请先充值",
-			})
-		case repository.ErrPackOffSale:
-			c.JSON(http.StatusOK, gin.H{
-				"code":    400,
-				"message": "资源包已下架",
-			})
-		case repository.ErrPackNotFound:
-			c.JSON(http.StatusOK, gin.H{
-				"code":    404,
-				"message": "资源包不存在",
-			})
-		default:
-			c.JSON(http.StatusOK, gin.H{
-				"code":    500,
-				"message": "购买资源包失败",
-			})
-		}
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "购买成功",
-		"data": gin.H{
-			"user_pack": up,
-		},
-	})
-}
-
 // respondPackPurchaseError 资源包购买失败响应：下架/不存在/推广 余额不足/单日限额等业务原因原样提示
 func (h *AuthHandler) respondPackPurchaseError(c *gin.Context, err error) {
 	switch {
@@ -1088,162 +1131,6 @@ func (h *AuthHandler) respondPackPurchaseError(c *gin.Context, err error) {
 	default:
 		c.JSON(http.StatusOK, gin.H{"code": 500, "message": "购买资源包失败"})
 	}
-}
-
-// PurchaseResourcePackOnline 在线购买资源包（支持组合支付：余额支付一部分 + 支付宝支付剩余部分）
-func (h *AuthHandler) PurchaseResourcePackOnline(c *gin.Context) {
-	userID := c.GetInt64("user_id")
-	packID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || packID <= 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    400,
-			"message": "invalid pack id",
-		})
-		return
-	}
-
-	var req struct {
-		Channel string `json:"channel" binding:"required"`
-		Scene   string `json:"scene"` // 扫码类渠道场景：native-扫码（PC） h5-移动端跳转
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    400,
-			"message": "invalid request parameters",
-		})
-		return
-	}
-
-	// 归属推广商的用户：资源包购买走平台余额（与平台直营一致），成交后由推广服务为其推广商计提提成
-	if h.promotionService.BillingReferrerID(userID) > 0 {
-		up, err := h.promotionService.PurchasePack(userID, packID)
-		if err != nil {
-			h.respondPackPurchaseError(c, err)
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"code":    0,
-			"message": "购买成功",
-			"data": gin.H{
-				"user_pack":      up,
-				"fully_paid":     true,
-				"balance_amount": 0,
-			},
-		})
-		return
-	}
-
-	result, err := h.balanceService.PrepareResourcePackOnline(userID, packID, req.Channel)
-	if err != nil {
-		h.respondPackPurchaseError(c, err)
-		return
-	}
-
-	// 余额已全额支付，直接发放资源包
-	if result.FullyPaidByBalance {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    0,
-			"message": "购买成功",
-			"data": gin.H{
-				"user_pack":      result.UserPack,
-				"fully_paid":     true,
-				"balance_amount": result.BalanceAmount,
-			},
-		})
-		return
-	}
-
-	order := result.PaymentOrder
-
-	// 已存在未过期的待支付单（支付查重命中）：直接复用首次下单时保存的渠道支付信息，不重复调上游/扣余额/建单
-	if order.ID > 0 {
-		if order.PayInfo == "" {
-			c.JSON(http.StatusOK, gin.H{"code": 500, "message": "支付信息缺失，请重新发起"})
-			return
-		}
-		var payInfo map[string]interface{}
-		if err := json.Unmarshal([]byte(order.PayInfo), &payInfo); err != nil {
-			c.JSON(http.StatusOK, gin.H{"code": 500, "message": "支付信息解析失败"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": payInfo})
-		return
-	}
-
-	data := gin.H{
-		"pay_order_no": order.PayOrderNo,
-		"amount":       result.ExternalAmount,
-		"balance_part": result.BalanceAmount,
-		"expire_time":  order.ExpireTime.Unix(),
-		"channel":      order.Channel,
-		"fully_paid":   false,
-	}
-
-	// 按渠道生成支付信息（上游失败回滚已扣余额，不落库支付单）
-	switch req.Channel {
-	case model.ChannelAlipay:
-		if h.alipay() == nil {
-			_ = h.balanceService.RollbackResourcePackReservation(result)
-			c.JSON(http.StatusOK, gin.H{"code": 500, "message": "支付宝支付未配置"})
-			return
-		}
-		payURL, err := h.alipay().BuildPagePayURL(order.PayOrderNo, order.Amount, "购买资源包", h.promotionService.SiteHosts(userID).ConsoleBase()+"/payment/")
-		if err != nil {
-			_ = h.balanceService.RollbackResourcePackReservation(result)
-			c.JSON(http.StatusOK, gin.H{"code": 500, "message": "生成支付宝支付链接失败"})
-			return
-		}
-		data["pay_type"] = "url"
-		data["pay_url"] = payURL
-	case model.ChannelWechat:
-		if h.wechatPay() == nil {
-			_ = h.balanceService.RollbackResourcePackReservation(result)
-			c.JSON(http.StatusOK, gin.H{"code": 500, "message": "微信支付未配置"})
-			return
-		}
-		if req.Scene == "h5" {
-			h5URL, err := h.wechatPay().CreateH5Order(order.PayOrderNo, order.Amount, "购买资源包", c.ClientIP())
-			if err != nil {
-				log.Printf("微信 H5 下单失败 [pay_order_no=%s]: %v", order.PayOrderNo, err)
-				_ = h.balanceService.RollbackResourcePackReservation(result)
-				c.JSON(http.StatusOK, gin.H{"code": 500, "message": "微信支付下单失败"})
-				return
-			}
-			data["pay_type"] = "h5"
-			data["h5_url"] = h5URL
-		} else {
-			codeURL, err := h.wechatPay().CreateNativeOrder(order.PayOrderNo, order.Amount, "购买资源包")
-			if err != nil {
-				log.Printf("微信 Native 下单失败 [pay_order_no=%s]: %v", order.PayOrderNo, err)
-				_ = h.balanceService.RollbackResourcePackReservation(result)
-				c.JSON(http.StatusOK, gin.H{"code": 500, "message": "微信支付下单失败"})
-				return
-			}
-			data["pay_type"] = "native"
-			data["code_url"] = codeURL
-		}
-	}
-
-	// 保存渠道支付信息到支付单（供支付查重命中时直接复用返回）
-	payInfoBytes, err := json.Marshal(data)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": "保存支付信息失败"})
-		return
-	}
-	order.PayInfo = string(payInfoBytes)
-
-	// 上游成功：落库支付单 + 余额部分账单（失败回滚已扣余额）
-	if err := h.balanceService.ConfirmResourcePackOrder(result); err != nil {
-		_ = h.balanceService.RollbackResourcePackReservation(result)
-		c.JSON(http.StatusOK, gin.H{"code": 500, "message": "保存支付单失败"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "success",
-		"data":    data,
-	})
 }
 
 // MyResourcePacks 我的资源包列表
@@ -1282,34 +1169,6 @@ func (h *AuthHandler) ListSmsResourcePacks(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"code": 0, "message": "success", "data": gin.H{"list": packs, "prices": prices},
-	})
-}
-
-// PurchaseSmsResourcePack 使用余额购买短信资源包
-func (h *AuthHandler) PurchaseSmsResourcePack(c *gin.Context) {
-	userID := c.GetInt64("user_id")
-	packID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil || packID <= 0 {
-		c.JSON(http.StatusOK, gin.H{"code": 400, "message": "invalid pack id"})
-		return
-	}
-
-	up, err := h.promotionService.PurchaseSmsPack(userID, packID)
-	if err != nil {
-		switch err {
-		case service.ErrInsufficientBalance:
-			c.JSON(http.StatusOK, gin.H{"code": 400, "message": "余额不足，请先充值"})
-		case repository.ErrPackOffSale:
-			c.JSON(http.StatusOK, gin.H{"code": 400, "message": "资源包已下架"})
-		case repository.ErrPackNotFound:
-			c.JSON(http.StatusOK, gin.H{"code": 404, "message": "资源包不存在"})
-		default:
-			c.JSON(http.StatusOK, gin.H{"code": 500, "message": "购买资源包失败"})
-		}
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"code": 0, "message": "购买成功", "data": gin.H{"user_pack": up},
 	})
 }
 

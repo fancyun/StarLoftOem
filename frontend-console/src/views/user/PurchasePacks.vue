@@ -9,16 +9,12 @@
           </h3>
           <el-button @click="$router.back()">返回</el-button>
         </div>
-        <p class="purchase-tip">支持余额支付与支付宝/微信组合支付（余额不足时自动补差额），支付完成后次数实时到账。</p>
+        <p class="purchase-tip">支持余额支付与支付宝/微信组合支付（余额不足时自动补差额），下单后在支付页选择支付方式完成付款，次数实时到账。</p>
 
         <div class="product-tabs">
           <el-radio-group v-model="activeProduct" @change="onTabChange">
             <el-radio-button value="fv_auth">有源（公安库）</el-radio-button>
             <el-radio-button value="fv_self">无源（自传照片）</el-radio-button>
-          </el-radio-group>
-          <el-radio-group v-model="payChannel" class="pay-channel">
-            <el-radio-button value="balance">余额</el-radio-button>
-            <el-radio-button v-for="ch in payChannelOptions" :key="ch.value" :value="ch.value">{{ ch.label }}</el-radio-button>
           </el-radio-group>
         </div>
 
@@ -38,7 +34,7 @@
                 :loading="purchasingId === pack.id"
                 @click="handlePurchase(pack)"
               >
-                购买
+                下单
               </el-button>
             </div>
           </div>
@@ -50,12 +46,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ShoppingCart } from '@element-plus/icons-vue'
 import { userAPI } from '@/api'
-import { PAY_CHANNEL_LABELS, PAY_CHANNEL_OPTIONS, loadEnabledPayChannels } from '@/utils/payment'
 
 const router = useRouter()
 const packs = ref<any[]>([])
@@ -64,13 +59,8 @@ const packPrices = ref<Record<string, number>>({})
 const purchasingId = ref<number | null>(null)
 const pageLoading = ref(true)
 const activeProduct = ref('fv_auth')
-const payChannel = ref('balance')
 
 const packPrice = (pack: any) => packPrices.value[pack.id] ?? pack.price
-
-// 已启用的在线支付渠道（未配置凭据的渠道不展示）
-const enabledChannels = ref<string[]>(['alipay', 'wechat'])
-const payChannelOptions = computed(() => PAY_CHANNEL_OPTIONS.filter((ch) => enabledChannels.value.includes(ch.value)))
 
 const productLabel = (product: string) => {
   if (product === 'fv_auth') return '人脸核验-有源'
@@ -81,14 +71,6 @@ const productLabel = (product: string) => {
 const unitText = () => '次认证'
 
 const defaultDesc = () => '人脸核验认证次数'
-
-// 移动端微信走 H5 跳转，PC 端走 Native 扫码
-const isMobile = () => {
-  return (
-    /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
-    (navigator.maxTouchPoints > 1 && window.innerWidth < 768)
-  )
-}
 
 const loadPacks = async () => {
   pageLoading.value = true
@@ -108,10 +90,9 @@ const onTabChange = () => {
 }
 
 const handlePurchase = (pack: any) => {
-  const methodText = payChannel.value === 'balance' ? '余额' : PAY_CHANNEL_LABELS[payChannel.value] || payChannel.value
   ElMessageBox.confirm(
-    `确认使用${methodText} ¥${packPrice(pack)} 购买「${pack.name}」？${payChannel.value === 'balance' ? '' : '余额不足时将自动补差额完成组合支付，'}购买后将获得 ${pack.total_count} ${unitText()}。`,
-    '确认购买',
+    `确认下单购买「${pack.name}」？应付 ¥${packPrice(pack)}，支付成功后将获得 ${pack.total_count} ${unitText()}。`,
+    '确认下单',
     {
       confirmButtonText: '确定',
       cancelButtonText: '取消',
@@ -121,29 +102,15 @@ const handlePurchase = (pack: any) => {
     .then(async () => {
       purchasingId.value = pack.id
       try {
-        if (payChannel.value === 'balance') {
-          await userAPI.purchasePack(pack.id)
-          ElMessage.success('购买成功')
-          await loadPacks()
-          return
-        }
-        // 在线购买（余额 + 在线支付渠道组合支付）
-        const scene = payChannel.value === 'wechat' && !isMobile() ? 'native' : 'h5'
-        const res: any = await userAPI.payPack(pack.id, { channel: payChannel.value, scene })
-        if (res.fully_paid) {
-          // 余额已全额覆盖，直接发放资源包
-          ElMessage.success('购买成功')
-          await loadPacks()
-          return
-        }
-        // 需要在线支付：携带支付信息跳转支付详情页
-        sessionStorage.setItem(
-          `starloft_pay_${res.pay_order_no}`,
-          JSON.stringify({ ...res, pay_purpose: 'resource_pack', return_path: '/fv/packs' })
-        )
+        const res: any = await userAPI.createOrder({
+          intent: 'resource_pack',
+          pack_id: pack.id,
+          product: activeProduct.value
+        })
+        // 建单成功后跳转统一支付页选择支付方式
         router.push(`/payment/${res.pay_order_no}`)
       } catch (error: any) {
-        ElMessage.error(error?.message || '购买失败')
+        ElMessage.error(error?.message || '下单失败')
       } finally {
         purchasingId.value = null
       }
@@ -151,9 +118,8 @@ const handlePurchase = (pack: any) => {
     .catch(() => {})
 }
 
-onMounted(async () => {
+onMounted(() => {
   loadPacks()
-  enabledChannels.value = await loadEnabledPayChannels()
 })
 </script>
 

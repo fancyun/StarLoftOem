@@ -557,30 +557,6 @@ func (s *PromotionService) ListAllCommissions(referrerType, bizType, keyword, st
 	return s.promotionRepo.ListAllCommissions(referrerType, bizType, keyword, startDate, endDate, page, pageSize)
 }
 
-// ---------- 资源包购买 ----------
-
-// PurchasePack 购买人脸核验类资源包：统一走平台余额购买。
-// 提成由余额服务在成交后按利润计提，且已覆盖「余额全额支付」与「余额 + 在线组合支付」两条路径，
-// 此处不再计提，避免同一笔购包写两条提成流水（历史遗留的重复计提）。
-func (s *PromotionService) PurchasePack(userID, packID int64) (*model.UserResourcePack, error) {
-	return s.balance.PurchaseResourcePack(userID, packID)
-}
-
-// PurchaseSmsPack 购买短信资源包：短信资源包是短信库独立表，余额服务不负责其提成，故在此按利润计提。
-func (s *PromotionService) PurchaseSmsPack(userID, packID int64) (*model.SmsUserResourcePack, error) {
-	price, count := 0.0, int64(0)
-	if pack, err := s.balance.smsResourcePackRepo.GetPackByID(packID); err == nil && pack != nil {
-		price = s.PackPrice(userID, pack.Product, packID, pack.Price)
-		count = int64(pack.TotalCount)
-	}
-	up, err := s.balance.PurchaseSmsResourcePack(userID, packID)
-	if err != nil {
-		return nil, err
-	}
-	s.accrueCommission(userID, model.ServiceSMS, price, count, model.CommissionBizPackPurchase, "sms_user_resource_pack", packID, "购买短信资源包提成")
-	return up, nil
-}
-
 // ---------- 计费 ----------
 
 // ChargeUnitFee 计费：按用户适用单价计算应付金额，统一走平台扣费（资源包优先、余额兜底），

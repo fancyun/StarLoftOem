@@ -162,6 +162,7 @@ const sections: Record<string, { label: string; defaultPath: string; menu: any[]
       { type: 'link', to: '/dashboard', label: '控制台首页', icon: 'home' },
       { type: 'link', to: '/certification', label: '实名认证', icon: 'idcard' },
       { type: 'link', to: '/balance', label: '余额管理', icon: 'wallet' },
+      { type: 'link', to: '/orders', label: '我的订单', icon: 'orders' },
       { type: 'link', to: '/api', label: 'API 管理', icon: 'code' },
       { type: 'link', to: '/promotion', label: '推广中心', icon: 'promotion' },
       { type: 'link', to: '/settings', label: '账户设置', icon: 'config' }
